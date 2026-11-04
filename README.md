@@ -54,6 +54,8 @@ O desde una copia local del repositorio:
 pip install -e .
 ```
 
+> Si `python-rtmidi` no se instala, normalmente es porque no hay un wheel precompilado para tu versión de Python. Usa Python 3.10–3.12 en macOS o Windows. En Linux instala antes `libasound2-dev` y `libjack-dev`.
+
 ### 2. Puertos MIDI
 
 * **macOS / Linux**: no hay que hacer nada. El servidor crea los puertos virtuales `CubaseMCP to Cubase`, `CubaseMCP from Cubase` y `CubaseMCP Notes`. Si prefieres que existan siempre, crea tres buses IAC con esos nombres (Configuración Audio MIDI → Estudio MIDI → IAC Driver).
