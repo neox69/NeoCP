@@ -22,7 +22,9 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Escribir notas | solo exporta .mid | ✓ | **✓ grabándolas en vivo, sincronizadas, más rápido que el tiempo real y cuantizadas** |
 | Generación musical | básica | ✗ | **Acordes, números romanos, voice leading, 15 estilos de batería, bajos, arpegios, melodías y canción completa** |
 | Medidores VU, Control Room | ✗ | ✗ | **✓** |
-| Herramientas MCP | 13 | ~20 | **58, más recursos y prompts** |
+| **Escuchar el audio** | ✗ | ✗ | **✓ LUFS, true peak, espectro, resonancias, tonalidad, acordes, tempo, estéreo y consejos de mezcla** |
+| Tararear → notas en una pista | ✗ | ✗ | **✓** |
+| Herramientas MCP | 13 | ~20 | **65, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -97,7 +99,7 @@ claude mcp add cubase -- cubase-mcp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (58)
+## Herramientas (65)
 
 **Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
 
@@ -115,9 +117,33 @@ Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
 **Música**: `music_theory`, `generate_chord_progression`, `generate_drum_pattern`, `generate_bassline`, `generate_arpeggio`, `generate_melody`, `transform_notes`, `export_midi_file`, `play_notes`, `stop_notes`, `record_notes_to_track`, `create_song_sketch`
 
+**Escuchar**: `listen_to_cubase`, `listen_to_meters`, `listen`, `list_audio_inputs`, `analyze_audio_file`, `compare_to_reference`, `transcribe_audio`
+
 **Avanzado**: `list_controls` y `set_control`, que dan acceso directo a cualquier control del puente
 
 Recursos: `cubase://commands` y `cubase://drum-map`. Prompt: `produce_track`.
+
+## Claude puede escuchar Cubase
+
+Hay tres maneras, de menos a más configuración:
+
+1. **`listen_to_meters`**: no necesita ninguna configuración. Reproduce y muestrea los medidores VU de cada pista, y dice cuál domina, cuál satura y cuál está en silencio.
+2. **`listen_to_cubase`**: escucha el audio real. Coloca el cursor, reproduce N compases, graba la salida de Cubase y la analiza:
+   * loudness integrado (LUFS, BS.1770 con gating), short-term, rango de loudness (LRA) y true peak (dBTP);
+   * dinámica (factor de cresta, RMS, clipping, DC offset), imagen estéreo (correlación, ancho, compatibilidad mono);
+   * equilibrio espectral por bandas, pendiente (tilt), resonancias con su nota musical;
+   * tempo, **tonalidad**, **acordes con número de compás**;
+   * **consejos de mezcla** concretos (por ejemplo, "resonancia en 312 Hz: recorte estrecho").
+
+   Con `solo_track` escucha una sola pista. El audio se guarda como WAV, y `compare_to_reference` lo compara con un tema de referencia.
+3. **`transcribe_audio`**: escucha el micrófono, o un archivo, y convierte una melodía tarareada, cantada o tocada en notas. Si se lo pides, las graba en una pista (`record_to_track`).
+
+**Cómo llevar el audio de Cubase al servidor (solo para el punto 2):**
+* **macOS**: instala [BlackHole 2ch](https://existential.audio/blackhole/). En Cubase, en *Studio → Audio Connections → Outputs*, crea un bus de salida hacia BlackHole y envíale el Stereo Out; también puedes crear un dispositivo multisalida (altavoces + BlackHole) en Configuración Audio MIDI.
+* **Windows**: instala [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) y crea en Cubase un bus de salida hacia "CABLE Input". El servidor escucha "CABLE Output".
+* El servidor detecta solo los dispositivos loopback. Para fijar uno concreto, usa `CUBASE_MCP_LISTEN_DEVICE=<nombre>`.
+
+El análisis es numpy puro y está verificado con señales de referencia. Un seno de 1 kHz a 0 dBFS en estéreo da 0,0 LUFS (el valor de la norma), y la progresión C–Am–F–G se reconoce como Do mayor con sus cuatro acordes.
 
 ## Cómo se escriben notas en Cubase
 

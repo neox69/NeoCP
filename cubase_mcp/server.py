@@ -37,6 +37,9 @@ How Cubase thinks (important):
   track, records the notes in real time from the 'CubaseMCP Notes' MIDI port and stops (optionally
   faster than real time and quantized). Or export_midi_file for drag & drop.
 * Plug-in parameters / loading plug-ins use DirectAccess (Cubase 13.0.50+, plug-in loading 15+).
+* You can LISTEN: listen_to_cubase plays a section and analyses the audio (LUFS, spectrum, key, chords,
+  tempo, mix suggestions); listen_to_meters works without any audio routing; transcribe_audio turns a hummed
+  melody into notes; compare_to_reference compares with a reference track.
 * Values are reported with Cubase's own display strings (e.g. "-6.02 dB"), use them to verify.
 Always call get_session_info first to see tracks and transport state.
 """
@@ -1217,6 +1220,233 @@ def create_song_sketch(key: str = "A minor", progression: Optional[List[str]] = 
     return result
 
 
+# ============================================================ listening ("ears")
+
+_last_listen: Dict[str, Any] = {}
+DEFAULT_ANALYSES = ["loudness", "dynamics", "stereo", "spectrum", "tempo", "key", "chords"]
+
+
+def _bars_from_seconds(sec: float, bpm: float, start_bar: float = 1.0, beats_per_bar: int = 4) -> float:
+    return round(start_bar + sec / (60.0 / bpm * beats_per_bar), 2)
+
+
+def _finish_analysis(audio, sr, source: str, analyses: Optional[List[str]], target_lufs: float,
+                     bpm: Optional[float] = None, start_bar: Optional[float] = None, save_as: Optional[str] = None) -> Dict[str, Any]:
+    from . import audio as A
+    if audio.shape[0] < sr * 0.2 or float(abs(audio).max(initial=0)) < 1e-5:
+        return {"source": source, "error": "silence captured: check that Cubase plays and that its output is routed "
+                                           "to the listening device (see list_audio_inputs / README)."}
+    rep = A.analyze(audio, sr, analyses or DEFAULT_ANALYSES, bpm_hint=bpm, target_lufs=target_lufs)
+    rep["source"] = source
+    if bpm and start_bar is not None:
+        for c in rep.get("chords", []):
+            c["bar"] = _bars_from_seconds(c["start_s"], bpm, start_bar)
+    path = _export_dir() / (save_as or f"listen_{time.strftime('%Y%m%d_%H%M%S')}.wav")
+    try:
+        A.save_wav(str(path), audio, sr)
+        rep["saved_wav"] = str(path)
+    except Exception as e:  # soundfile missing
+        rep["saved_wav"] = f"not saved: {e}"
+    _last_listen.clear()
+    _last_listen.update({"report": rep, "path": rep.get("saved_wav")})
+    return rep
+
+
+@tool
+def list_audio_inputs() -> Dict[str, Any]:
+    """Audio input devices the server can listen to. Devices flagged looks_like_loopback (BlackHole, VB-Cable,
+    Stereo Mix...) can carry Cubase's output; microphones are used for transcribe_audio."""
+    from . import capture
+    devs = capture.list_input_devices()
+    try:
+        default = capture.resolve_device()[1]
+    except Exception as e:
+        default = str(e)
+    return {"inputs": devs, "default_listen_device": default,
+            "hint": "Route a Cubase output bus to a loopback device (macOS: BlackHole; Windows: VB-Cable) "
+                    "and set CUBASE_MCP_LISTEN_DEVICE to its name."}
+
+
+@tool
+def listen(seconds: float = 8.0, device: Optional[str] = None, analyses: Optional[List[str]] = None,
+           target_lufs: float = -14.0) -> Dict[str, Any]:
+    """Listen to whatever is coming in right now (does not touch the transport) and analyse it.
+    analyses ⊆ loudness, dynamics, stereo, spectrum, tempo, key, chords, melody."""
+    from . import capture
+    audio, sr, name = capture.record(min(seconds, 120.0), device)
+    bpm = None
+    if _bridge and _bridge.connected:
+        bpm = _bridge.transport.get("tempo")
+    return _finish_analysis(audio, sr, f"input '{name}'", analyses, target_lufs, bpm)
+
+
+@tool
+def listen_to_cubase(start_bar: float = 1.0, bars: float = 8.0, device: Optional[str] = None,
+                     analyses: Optional[List[str]] = None, target_lufs: float = -14.0,
+                     solo_track: Optional[TrackRef] = None, beats_per_bar: int = 4) -> Dict[str, Any]:
+    """Play a section of the project and LISTEN to it: moves the cursor to start_bar, plays `bars` bars while
+    recording Cubase's output from the loopback device, stops and returns an objective report: LUFS / true
+    peak / LRA, dynamics, stereo image, spectral balance and resonances, tempo, key, chords (with bar numbers)
+    and mixing suggestions. solo_track listens to a single track (solo is restored afterwards)."""
+    from . import capture
+    b = bridge()
+    bpm = float(b.transport.get("tempo") or 120.0)
+    seconds = bars * beats_per_bar * 60.0 / bpm
+    if seconds > 300:
+        raise ValueError("section too long (max 300 s)")
+    solo_pre = None
+    if solo_track is not None:
+        solo_pre = b.track_prefix(_resolve_track(b, solo_track))
+        was_solo = _flag(b, f"{solo_pre}.solo")
+        b.set_and_wait(f"{solo_pre}.solo", 1.0)
+    if _flag(b, "transport.play"):
+        transport.__wrapped__("stop")
+    b.request("time", locator="cursor", value=_position_string(b, start_bar, beats_per_bar=beats_per_bar))
+    time.sleep(0.15)
+    rec = capture.Recorder(device).start()
+    t_rec = time.time()
+    t_play = t_rec
+    try:
+        b.set("transport.play", 1.0)
+        b.wait_for(lambda: bool(_flag(b, "transport.play")), 1.5)
+        t_play = time.time()
+        time.sleep(seconds + 0.25)
+    finally:
+        b.set("transport.stop", 1.0)
+        time.sleep(0.05)
+        b.set("transport.stop", 0.0)
+        audio, sr = rec.stop()
+        if solo_pre is not None and not was_solo:
+            b.set(f"{solo_pre}.solo", 0.0)
+    # trim the part captured before playback started (keep 50 ms of margin)
+    lead = max(0.0, t_play - t_rec - 0.05)
+    audio = audio[int(lead * sr):]
+    rep = _finish_analysis(audio, sr, f"Cubase bars {start_bar}-{start_bar + bars} via '{rec.device_name}'",
+                           analyses, target_lufs, bpm, start_bar)
+    rep["project_tempo"] = bpm
+    if solo_track is not None:
+        rep["soloed_track"] = (b.objects.get(solo_pre) or {}).get("title")
+    return rep
+
+
+@tool
+def listen_to_meters(seconds: float = 8.0, start_bar: Optional[float] = None, interval: float = 0.05) -> Dict[str, Any]:
+    """Zero-setup listening: plays (from start_bar if given) and samples every track's VU meter, reporting per
+    track average/peak level (Cubase normalized meter scale 0..1), clip flags and which tracks dominate the mix.
+    Needs no audio routing."""
+    b = bridge()
+    started = False
+    if start_bar is not None:
+        b.request("time", locator="cursor", value=_position_string(b, start_bar))
+    if not _flag(b, "transport.play"):
+        b.set("transport.play", 1.0)
+        started = True
+    samples: Dict[str, List[float]] = {}
+    clips: Dict[str, bool] = {}
+    end = time.time() + min(seconds, 120.0)
+    try:
+        time.sleep(0.2)
+        while time.time() < end:
+            for sid, v in b.request("meters")["slots"]:
+                key = b.keys[sid]
+                pre, _, kind = key.partition(".")
+                name = (b.objects.get(pre) or {}).get("title")
+                if not name or v is None:
+                    continue
+                if kind == "meter":
+                    samples.setdefault(f"{pre}|{name}", []).append(float(v))
+                elif kind == "meterclip" and v > 0.5:
+                    clips[name] = True
+            time.sleep(interval)
+    finally:
+        if started:
+            b.set("transport.stop", 1.0)
+            time.sleep(0.05)
+            b.set("transport.stop", 0.0)
+    rows = []
+    for k, vals in samples.items():
+        pre, name = k.split("|", 1)
+        arr = sorted(vals)
+        rows.append({"track": name, "bus": pre.startswith("io"), "avg": round(sum(arr) / len(arr), 3),
+                     "p95": round(arr[int(len(arr) * 0.95) - 1 if len(arr) > 1 else 0], 3), "max": round(arr[-1], 3),
+                     "silent": arr[-1] < 0.01, "clipped": clips.get(name, False)})
+    rows.sort(key=lambda r: -r["avg"])
+    tracks = [r for r in rows if not r["bus"]]
+    notes = []
+    if tracks:
+        top = tracks[0]
+        if len(tracks) > 1 and top["avg"] > 1.5 * max(tracks[1]["avg"], 1e-6):
+            notes.append(f"'{top['track']}' dominates the mix (avg {top['avg']} vs next {tracks[1]['avg']}).")
+        notes += [f"'{r['track']}' clipped." for r in rows if r["clipped"]]
+        notes += [f"'{r['track']}' was silent." for r in tracks if r["silent"]]
+    return {"samples_per_track": len(next(iter(samples.values()), [])), "levels": rows, "notes": notes}
+
+
+@tool
+def analyze_audio_file(path: str, analyses: Optional[List[str]] = None, target_lufs: float = -14.0,
+                       max_seconds: float = 600.0) -> Dict[str, Any]:
+    """Analyse an audio file (exported mixdown, stem, reference track, bounce): loudness, true peak, dynamics,
+    stereo, spectrum, tempo, key, chords, optional melody transcription and suggestions."""
+    from . import audio as A
+    p = os.path.expanduser(path)
+    data, sr = A.load_file(p, max_seconds)
+    rep = A.analyze(data, sr, analyses or DEFAULT_ANALYSES, target_lufs=target_lufs)
+    rep["source"] = p
+    return rep
+
+
+@tool
+def compare_to_reference(reference_path: str, mix_path: Optional[str] = None) -> Dict[str, Any]:
+    """Compare your mix with a reference track (loudness, dynamics, width, band balance) and get EQ/level
+    suggestions. mix_path defaults to the last thing heard with listen / listen_to_cubase."""
+    from . import audio as A
+    if mix_path:
+        d, sr = A.load_file(os.path.expanduser(mix_path), 600)
+        mine = A.analyze(d, sr, ["loudness", "dynamics", "stereo", "spectrum"])
+    elif _last_listen.get("report"):
+        mine = _last_listen["report"]
+    else:
+        raise ValueError("give mix_path or listen to Cubase first")
+    d, sr = A.load_file(os.path.expanduser(reference_path), 600)
+    ref = A.analyze(d, sr, ["loudness", "dynamics", "stereo", "spectrum"])
+    return {"mix_minus_reference": A.compare(mine, ref),
+            "mix": {k: mine.get(k) for k in ("loudness", "stereo")},
+            "reference": {k: ref.get(k) for k in ("loudness", "stereo")}}
+
+
+@tool
+def transcribe_audio(path: Optional[str] = None, seconds: float = 8.0, device: Optional[str] = None,
+                     bpm: Optional[float] = None, quantize: float = 0.25,
+                     record_to_track: Optional[TrackRef] = None, start_bar: float = 1.0) -> Dict[str, Any]:
+    """Turn a monophonic melody into notes: from an audio file, or by LISTENING to a microphone/input for
+    `seconds` (hum, sing, whistle or play). Notes are in beats at the project tempo; optionally record them
+    straight into a MIDI/instrument track (record_to_track)."""
+    from . import audio as A
+    if bpm is None and _bridge and _bridge.connected:
+        bpm = _bridge.transport.get("tempo")
+    bpm = float(bpm or 120.0)
+    if path:
+        data, sr = A.load_file(os.path.expanduser(path), 300)
+        src = path
+    else:
+        from . import capture
+        data, sr, name = capture.record(min(seconds, 60.0), device, prefer_loopback=False)
+        src = f"input '{name}'"
+    mono = A.to_float(data).mean(axis=1)
+    notes = A.transcribe_melody(mono, sr, bpm, quantize=quantize or None)
+    if notes:
+        first = notes[0]["start"]
+        for n in notes:
+            n["start"] = round(n["start"] - first, 4)
+    res: Dict[str, Any] = {"source": src, "bpm": bpm, "count": len(notes), "notes": notes}
+    if notes:
+        res["key_guess"] = A.detect_key(A.chromagram(mono, sr))["key"]
+    if record_to_track is not None and notes:
+        r = record_notes_to_track.__wrapped__(record_to_track, notes, start_bar)
+        res["recorded"] = json.loads(r) if isinstance(r, str) else r
+    return res
+
+
 # ============================================================ resources & prompts
 
 @mcp.resource("cubase://commands")
@@ -1240,7 +1470,8 @@ def produce_track(idea: str = "a melancholic synthwave groove at 100 BPM") -> st
             "with load_plugin (Cubase 15) or ask me to pick them.\n"
             "3. generate_* tools for parts, then record_notes_to_track for each (speed=2 is fine).\n"
             "4. Balance with set_track_volume / set_track_pan, add EQ with set_eq_band, sends with set_send.\n"
-            "5. set_loop_range and transport('play') to listen; mixer_overview to check levels; project_action('save').")
+            "5. listen_to_cubase (or listen_to_meters if no loopback device) to HEAR the result: fix level, EQ and "
+            "balance problems it reports, listen again, then project_action('save').")
 
 
 def main() -> None:
