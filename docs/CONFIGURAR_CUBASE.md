@@ -5,7 +5,7 @@ Esta guía explica, paso a paso, todo lo que hay que preparar en el ordenador y 
 | Nivel | Qué consigue Claude | Qué hay que configurar |
 |---|---|---|
 | 1. Control | Ver el proyecto, mezclador, transporte, plug-ins, 1454 comandos | Servidor + 2 puertos MIDI + script MIDI Remote |
-| 2. Escribir notas | Grabar acordes, baterías, bajos y melodías en pistas | + puerto `CubaseMCP Notes` + 3 ajustes de grabación |
+| 2. Escribir notas | Grabar acordes, baterías, bajos y melodías en pistas | + puerto `NeoCP Notes` + 3 ajustes de grabación |
 | 3. Escuchar por medidores | Saber qué pista suena fuerte, satura o está en silencio | Nada más |
 | 4. Escuchar el audio real | LUFS, espectro, tonalidad, acordes, estructura, espectrograma, mezcla automática | + un dispositivo de audio "loopback" |
 | 5. Escuchar el micrófono | Tararear una melodía y convertirla en notas | Un micrófono |
@@ -27,13 +27,25 @@ Esta guía explica, paso a paso, todo lo que hay que preparar en el ordenador y 
 * **Python 3.10–3.12**, recomendado porque hay paquetes precompilados de `python-rtmidi` para esas versiones. En macOS se instala con `brew install python@3.12`; en Windows, desde python.org.
 * **Claude Desktop** o **Claude Code**.
 
-## 1. Instalar el servidor
+## 1. Instalar NeoCP
+
+**Lo más fácil:** descarga el ZIP de tu sistema desde [Releases](https://github.com/neox69/cubasis_mcp/releases/latest) y haz doble clic en el instalador. Cubre automáticamente los apartados 1, 3 y 4 de esta guía, y en Windows ofrece instalar loopMIDI (apartado 2).
+
+**A mano:**
+
+```bash
+uv tool install --python 3.12 neocp-1.0.0-py3-none-any.whl
+```
+
+También puedes usar pip:
 
 ```bash
 pip install git+https://github.com/neox69/cubasis_mcp.git
 ```
 
-Esto instala dos comandos: `cubase-mcp`, que es el servidor, y `cubase-mcp-install`, que instala el script en Cubase.
+Se instalan dos comandos: `neocp`, que es el servidor, y `neocp-install`, que instala el script en Cubase, configura Claude y, con `--check`, diagnostica la instalación.
+
+> **Alternativa al instalador del script:** en Cubase, abre **MIDI Remote Manager → Scripts → Import Script** y elige `NeoCP_Bridge.midiremote`, que viene en la release.
 
 ## 2. Puertos MIDI (el "cable" entre Claude y Cubase)
 
@@ -41,9 +53,9 @@ Se usan tres puertos con estos nombres exactos:
 
 | Puerto | Sentido | Para qué sirve |
 |---|---|---|
-| `CubaseMCP to Cubase` | servidor → Cubase | Órdenes y cambios de valores |
-| `CubaseMCP from Cubase` | Cubase → servidor | Respuestas y estado en vivo |
-| `CubaseMCP Notes` | servidor → pistas | Notas que se tocan o graban |
+| `NeoCP to Cubase` | servidor → Cubase | Órdenes y cambios de valores |
+| `NeoCP from Cubase` | Cubase → servidor | Respuestas y estado en vivo |
+| `NeoCP Notes` | servidor → pistas | Notas que se tocan o graban |
 
 ### macOS
 No hay que hacer nada: el servidor crea los puertos virtuales al arrancar.
@@ -68,24 +80,24 @@ El servidor crea los puertos con ALSA. Linux no tiene Cubase nativo; este caso s
 1. Ejecuta:
 
    ```bash
-   cubase-mcp-install
+   neocp-install
    ```
 
    Si usas Nuendo:
 
    ```bash
-   cubase-mcp-install --app Nuendo
+   neocp-install --app Nuendo
    ```
 
    El script se copia en:
-   * macOS: `~/Documents/Steinberg/Cubase/MIDI Remote/Driver Scripts/Local/CubaseMCP/Bridge/`
-   * Windows: `Documentos\Steinberg\Cubase\MIDI Remote\Driver Scripts\Local\CubaseMCP\Bridge\`
+   * macOS: `~/Documents/Steinberg/Cubase/MIDI Remote/Driver Scripts/Local/NeoCP/Bridge/`
+   * Windows: `Documentos\Steinberg\Cubase\MIDI Remote\Driver Scripts\Local\NeoCP\Bridge\`
 2. En Cubase, abre la **zona inferior → pestaña MIDI Remote** y pulsa **Reload Scripts**, o reinicia Cubase.
-3. Con los puertos ya creados, el controlador **CubaseMCP – Bridge** se detecta solo. Si no aparece:
-   * Pulsa **+ (Add MIDI Controller Surface)** → Vendor **CubaseMCP** → Model **Bridge**.
-   * Entrada MIDI: `CubaseMCP to Cubase`. Salida MIDI: `CubaseMCP from Cubase`.
+3. Con los puertos ya creados, el controlador **NeoCP – Bridge** se detecta solo. Si no aparece:
+   * Pulsa **+ (Add MIDI Controller Surface)** → Vendor **NeoCP** → Model **Bridge**.
+   * Entrada MIDI: `NeoCP to Cubase`. Salida MIDI: `NeoCP from Cubase`.
 4. Compruébalo en **Studio → MIDI Remote Manager**: el dispositivo debe figurar como activo.
-5. Para ver los mensajes del script, abre **MIDI Remote → menú → Script Console**. Al activarse muestra `[CubaseMCP] activated, NNNN slots`.
+5. Para ver los mensajes del script, abre **MIDI Remote → menú → Script Console**. Al activarse muestra `[NeoCP] activated, NNNN slots`.
 
 > Cubase quita automáticamente de *All MIDI Inputs* los puertos asignados a un MIDI Remote. Por eso las órdenes del servidor nunca suenan como notas en tus pistas.
 
@@ -99,9 +111,9 @@ El servidor crea los puertos con ALSA. Linux no tiene Cubase nativo; este caso s
 {
   "mcpServers": {
     "cubase": {
-      "command": "cubase-mcp",
+      "command": "neocp",
       "env": {
-        "CUBASE_MCP_LISTEN_DEVICE": "BlackHole 2ch"
+        "NEOCP_LISTEN_DEVICE": "BlackHole 2ch"
       }
     }
   }
@@ -111,22 +123,22 @@ El servidor crea los puertos con ALSA. Linux no tiene Cubase nativo; este caso s
 **Claude Code**:
 
 ```bash
-claude mcp add cubase -e CUBASE_MCP_LISTEN_DEVICE="BlackHole 2ch" -- cubase-mcp
+claude mcp add cubase -e NEOCP_LISTEN_DEVICE="BlackHole 2ch" -- neocp
 ```
 
 Para probarlo, pregunta: *"¿qué hay en mi proyecto de Cubase?"*. Claude debería listar tus pistas y el tempo.
 
 ## 5. Para que Claude escriba notas
 
-La API de Cubase no permite insertar notas directamente, así que Claude las **graba** tocándolas por el puerto `CubaseMCP Notes`. Hacen falta estos ajustes:
+La API de Cubase no permite insertar notas directamente, así que Claude las **graba** tocándolas por el puerto `NeoCP Notes`. Hacen falta estos ajustes:
 
 1. **Precount desactivado**: en la barra de transporte, desactiva el icono de la claqueta de precount. También está en *Transport → Metronome Setup → Use Count-in*.
-2. **Entrada de la pista MIDI o de instrumento**: *All MIDI Inputs* (el valor por defecto) o directamente `CubaseMCP Notes`.
+2. **Entrada de la pista MIDI o de instrumento**: *All MIDI Inputs* (el valor por defecto) o directamente `NeoCP Notes`.
 3. **Modo de grabación MIDI** recomendado: *New Parts*, en la barra de transporte o en *Transport → MIDI Record Mode*. Desactiva *Auto-Quantize*: Claude cuantiza cuando se lo pides.
 4. Opcional: **Preferences → MIDI → MIDI Thru Active** activado. Así oyes lo que Claude toca con `play_notes` sin grabar; la pista debe estar seleccionada y armada, o con monitor.
 5. Para grabar más rápido que el tiempo real (`speed=2`), la **pista de tempo debe estar desactivada**: Claude cambia el tempo fijo del proyecto durante la toma y luego lo restaura.
 
-Si las notas quedan algo desplazadas, ajusta `CUBASE_MCP_RECORD_LATENCY_MS` (por ejemplo, `-10` o `15`) o pide `quantize_after=True`.
+Si las notas quedan algo desplazadas, ajusta `NEOCP_RECORD_LATENCY_MS` (por ejemplo, `-10` o `15`) o pide `quantize_after=True`.
 
 ## 6. Para que Claude escuche
 
@@ -155,12 +167,12 @@ En Windows, Cubase usa ASIO, que suele tener la tarjeta en exclusiva. Hay tres o
 
 **A) Tu interfaz tiene loopback.** Muchas lo incluyen: Steinberg UR (función *Loopback* en dspMixFx), Focusrite Scarlett de 3.ª/4.ª generación (entradas *Loopback 1-2*), RME (TotalMix *Loopback*), MOTU, Audient EVO, etc.
 1. Activa el loopback en el software de la interfaz.
-2. Fija ese dispositivo con `CUBASE_MCP_LISTEN_DEVICE` (por ejemplo, `"Loopback"`).
+2. Fija ese dispositivo con `NEOCP_LISTEN_DEVICE` (por ejemplo, `"Loopback"`).
 
 **B) VoiceMeeter Banana (gratuito)**: https://vb-audio.com/Voicemeeter/banana.htm
 1. Selecciona **Voicemeeter Virtual ASIO** como driver de Cubase.
 2. En VoiceMeeter, envía la entrada virtual a **A1**, que es tu interfaz, y a **B1**.
-3. El servidor escucha `Voicemeeter Out B1` (`CUBASE_MCP_LISTEN_DEVICE="Voicemeeter Out B1"`).
+3. El servidor escucha `Voicemeeter Out B1` (`NEOCP_LISTEN_DEVICE="Voicemeeter Out B1"`).
 
 **C) VB-Cable con el *Generic Low Latency ASIO Driver* de Cubase**: https://vb-audio.com/Cable/
 1. En *Studio Setup → Generic Low Latency ASIO Driver*, activa tu tarjeta y **CABLE Input** como salidas.
@@ -185,23 +197,23 @@ Pide a Claude, en orden:
 
 | Variable | Valor por defecto | Descripción |
 |---|---|---|
-| `CUBASE_MCP_LISTEN_DEVICE` | auto (busca un loopback) | Dispositivo de audio que escucha el servidor (nombre parcial o id) |
-| `CUBASE_MCP_EXPORT_DIR` | `~/Documents/CubaseMCP` | Dónde se guardan los WAV escuchados y los MIDI exportados |
-| `CUBASE_MCP_WRITE_MODE` | `nrpn` | `sysex` si los controles no responden a NRPN |
-| `CUBASE_MCP_RECORD_LATENCY_MS` | `0` | Compensación de tiempo al grabar notas |
-| `CUBASE_MCP_PORT_TO_CUBASE` / `_FROM_CUBASE` / `_NOTES` | nombres estándar | Nombres alternativos de los puertos |
-| `CUBASE_MCP_LOG` | `INFO` | Nivel de log (`DEBUG` para diagnosticar) |
+| `NEOCP_LISTEN_DEVICE` | auto (busca un loopback) | Dispositivo de audio que escucha el servidor (nombre parcial o id) |
+| `NEOCP_EXPORT_DIR` | `~/Documents/NeoCP` | Dónde se guardan los WAV escuchados y los MIDI exportados |
+| `NEOCP_WRITE_MODE` | `nrpn` | `sysex` si los controles no responden a NRPN |
+| `NEOCP_RECORD_LATENCY_MS` | `0` | Compensación de tiempo al grabar notas |
+| `NEOCP_PORT_TO_CUBASE` / `_FROM_CUBASE` / `_NOTES` | nombres estándar | Nombres alternativos de los puertos |
+| `NEOCP_LOG` | `INFO` | Nivel de log (`DEBUG` para diagnosticar) |
 
 ## 9. Solución de problemas
 
 | Síntoma | Causa probable | Solución |
 |---|---|---|
 | "timeout waiting for Cubase" | El script no está activo o los puertos están mal asignados | Pulsa Reload Scripts, revisa el MIDI Remote Manager y comprueba que los puertos coinciden (apartado 3) |
-| Claude lee el proyecto, pero los cambios no se aplican | Cubase no procesa el NRPN | Pon `CUBASE_MCP_WRITE_MODE=sysex` y reinicia Claude |
+| Claude lee el proyecto, pero los cambios no se aplican | Cubase no procesa el NRPN | Pon `NEOCP_WRITE_MODE=sysex` y reinicia Claude |
 | "cannot open MIDI ports" en Windows | Faltan los puertos de loopMIDI | Créalos con los nombres exactos |
 | `listen_to_cubase` dice "silence captured" | La salida de Cubase no llega al loopback | Revisa el apartado 6 y prueba con `listen` mientras suena algo |
-| Las notas grabadas empiezan tarde o pronto | Precount activado o latencia | Desactiva el precount y ajusta `CUBASE_MCP_RECORD_LATENCY_MS` |
-| Las notas no se graban | La entrada de la pista no recibe `CubaseMCP Notes` | Pon la entrada de la pista en All MIDI Inputs o en CubaseMCP Notes |
+| Las notas grabadas empiezan tarde o pronto | Precount activado o latencia | Desactiva el precount y ajusta `NEOCP_RECORD_LATENCY_MS` |
+| Las notas no se graban | La entrada de la pista no recibe `NeoCP Notes` | Pon la entrada de la pista en All MIDI Inputs o en NeoCP Notes |
 | `load_plugin` falla | Cubase anterior a 15.0.20 | Carga el plug-in a mano; los parámetros sí son accesibles desde 13.0.50 |
 | Faltan pistas en la lista | El proyecto tiene más de 32 canales | Usa `list_tracks(page=1)` o `bank('next')` |
 | Los volúmenes en dB no son exactos | Se usa la curva del fader | El servidor ajusta iterativamente; la tolerancia es de 0,1 dB |

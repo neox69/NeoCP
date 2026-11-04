@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 
-from cubase_mcp import audio as A
+from neocp import audio as A
 
 SR = 48000
 
@@ -49,7 +49,7 @@ def test_suggestions_and_compare():
 
 
 def test_file_tools(tmp_path):
-    from cubase_mcp import server as S
+    from neocp import server as S
     p = tmp_path / "x.wav"
     A.save_wav(str(p), np.stack([tone([440], 3)] * 2, 1), SR)
     r = json.loads(S.analyze_audio_file(str(p)))
@@ -61,8 +61,8 @@ def test_file_tools(tmp_path):
 
 
 def test_listen_to_cubase(mock_bridge, monkeypatch, tmp_path):
-    from cubase_mcp import capture, server as S
-    monkeypatch.setenv("CUBASE_MCP_EXPORT_DIR", str(tmp_path))
+    from neocp import capture, server as S
+    monkeypatch.setenv("NEOCP_EXPORT_DIR", str(tmp_path))
 
     class FakeRec:
         device_name = "BlackHole 2ch"
@@ -101,7 +101,7 @@ def _song():
 
 
 def test_structure_and_spectrogram(tmp_path):
-    from cubase_mcp import server as S
+    from neocp import server as S
     song = _song()
     r = A.song_structure(song, SR, 120)
     assert [s["name"] for s in r["sections"]] == ["intro", "verse", "chorus", "verse", "chorus", "bridge", "chorus", "outro"]
@@ -130,8 +130,8 @@ class _FakeRec:
 
 
 def test_closed_loop_tools(mock_bridge, monkeypatch, tmp_path):
-    from cubase_mcp import capture, server as S
-    monkeypatch.setenv("CUBASE_MCP_EXPORT_DIR", str(tmp_path))
+    from neocp import capture, server as S
+    monkeypatch.setenv("NEOCP_EXPORT_DIR", str(tmp_path))
     monkeypatch.setattr(capture, "Recorder", _FakeRec)
     rng = np.random.default_rng(1)
     _FakeRec.signal = 0.05 * rng.standard_normal(SR * 4) + tone([700], 4, 0.2)  # noise + 700 Hz ring

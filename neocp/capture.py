@@ -6,7 +6,7 @@ To hear Cubase, route its output into a loopback device:
 * Windows: VB-Audio Virtual Cable, or "Stereo Mix" if your card has it; Cubase's ASIO driver
   usually owns the hardware, so a virtual cable bus in Cubase is the reliable route.
 * Any OS: a microphone input works too (humming / playing an instrument).
-Set CUBASE_MCP_LISTEN_DEVICE to a device name substring to choose the default.
+Set NEOCP_LISTEN_DEVICE to a device name substring to choose the default.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _sd():
     try:
         import sounddevice as sd
     except Exception as e:  # pragma: no cover - depends on system PortAudio
-        raise RuntimeError(f"audio capture needs 'sounddevice' + PortAudio ({e}). pip install 'cubase-mcp[audio]'") from e
+        raise RuntimeError(f"audio capture needs 'sounddevice' + PortAudio ({e}). pip install 'neocp'") from e
     return sd
 
 
@@ -41,7 +41,7 @@ def list_input_devices() -> List[Dict[str, Any]]:
 
 def resolve_device(device: Optional[str] = None, prefer_loopback: bool = True) -> Tuple[Optional[int], str]:
     devs = list_input_devices()
-    want = device or os.environ.get("CUBASE_MCP_LISTEN_DEVICE")
+    want = device or os.environ.get("NEOCP_LISTEN_DEVICE")
     if want is not None and str(want).isdigit():
         d = next((x for x in devs if x["id"] == int(want)), None)
         if d:

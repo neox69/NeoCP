@@ -2,16 +2,16 @@
 """Generate the final MIDI Remote script with the embedded Cubase command catalog.
 
 Usage: python scripts/build_midi_remote.py
-Output: cubase_mcp/midi_remote/CubaseMCP/Bridge/CubaseMCP_Bridge.js
+Output: neocp/midi_remote/NeoCP/Bridge/NeoCP_Bridge.js
 """
 import json
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE = ROOT / "midi_remote" / "CubaseMCP_Bridge.template.js"
-COMMANDS = ROOT / "cubase_mcp" / "data" / "commands.json"
-OUT = ROOT / "cubase_mcp" / "midi_remote" / "CubaseMCP" / "Bridge" / "CubaseMCP_Bridge.js"
+TEMPLATE = ROOT / "midi_remote" / "NeoCP_Bridge.template.js"
+COMMANDS = ROOT / "neocp" / "data" / "commands.json"
+OUT = ROOT / "neocp" / "midi_remote" / "NeoCP" / "Bridge" / "NeoCP_Bridge.js"
 
 
 def js_string(s: str) -> str:
@@ -19,7 +19,7 @@ def js_string(s: str) -> str:
 
 
 def main() -> None:
-    version = re.search(r'__version__ = "([^"]+)"', (ROOT / "cubase_mcp" / "__init__.py").read_text()).group(1)
+    version = re.search(r'__version__ = "([^"]+)"', (ROOT / "neocp" / "__init__.py").read_text()).group(1)
     cmds = json.loads(COMMANDS.read_text(encoding="utf-8"))
     seen = set()
     lines = []

@@ -1,4 +1,4 @@
-"""Cubase MCP server – exposes Steinberg Cubase / Nuendo to MCP clients (Claude etc.)."""
+"""NeoCP server – exposes Steinberg Cubase / Nuendo to MCP clients (Claude etc.)."""
 from __future__ import annotations
 
 import json
@@ -21,9 +21,9 @@ from . import __version__
 from . import music as M
 from .bridge import CubaseBridge, CubaseError, SETUP_HINT, _parse_number
 
-logging.basicConfig(level=os.environ.get("CUBASE_MCP_LOG", "INFO"),
+logging.basicConfig(level=os.environ.get("NEOCP_LOG", "INFO"),
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
-logger = logging.getLogger("cubase_mcp")
+logger = logging.getLogger("neocp")
 
 INSTRUCTIONS = """Control Steinberg Cubase/Nuendo (13+) live through its MIDI Remote API.
 
@@ -34,7 +34,7 @@ How Cubase thinks (important):
 * Anything in Cubase's menus/key commands can be run with execute_command; use search_commands
   to find the exact category/command pair (1400+ commands: add tracks, quantize, bounce, export...).
 * Notes cannot be written directly into parts by the API. Use record_notes_to_track: it arms the
-  track, records the notes in real time from the 'CubaseMCP Notes' MIDI port and stops (optionally
+  track, records the notes in real time from the 'NeoCP Notes' MIDI port and stops (optionally
   faster than real time and quantized). Or export_midi_file for drag & drop.
 * Plug-in parameters / loading plug-ins use DirectAccess (Cubase 13.0.50+, plug-in loading 15+).
 * You can LISTEN: listen_to_cubase plays a section and analyses the audio (LUFS, spectrum, key, chords,
@@ -46,7 +46,7 @@ How Cubase thinks (important):
 Always call get_session_info first to see tracks and transport state.
 """
 
-mcp = _Server("Cubase", instructions=INSTRUCTIONS)
+mcp = _Server("NeoCP", instructions=INSTRUCTIONS)
 
 _bridge: Optional[CubaseBridge] = None
 _bridge_lock = threading.Lock()
@@ -1072,16 +1072,16 @@ def transform_notes(notes: List[Dict[str, Any]], transpose: int = 0, shift_beats
 
 
 def _export_dir() -> Path:
-    d = Path(os.environ.get("CUBASE_MCP_EXPORT_DIR", Path.home() / "Documents" / "CubaseMCP"))
+    d = Path(os.environ.get("NEOCP_EXPORT_DIR", Path.home() / "Documents" / "NeoCP"))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 @tool
-def export_midi_file(tracks: Dict[str, List[Dict[str, Any]]], filename: str = "cubase_mcp.mid",
+def export_midi_file(tracks: Dict[str, List[Dict[str, Any]]], filename: str = "neocp.mid",
                      tempo: Optional[float] = None, time_signature: str = "4/4") -> Dict[str, Any]:
     """Write a multi-track MIDI file, e.g. {"Drums": [...], "Bass": [...]} (tracks starting with 'drum' use
-    channel 10). Saved to ~/Documents/CubaseMCP (or CUBASE_MCP_EXPORT_DIR). Drag it into Cubase or use
+    channel 10). Saved to ~/Documents/NeoCP (or NEOCP_EXPORT_DIR). Drag it into Cubase or use
     project_action('import_midi')."""
     if tempo is None:
         try:
@@ -1104,7 +1104,7 @@ _play_stop = threading.Event()
 @tool
 def play_notes(notes: List[Dict[str, Any]], track: Optional[TrackRef] = None, bpm: Optional[float] = None,
                channel: int = 0) -> Dict[str, Any]:
-    """Audition notes live through the 'CubaseMCP Notes' port into the selected (monitored/armed) track
+    """Audition notes live through the 'NeoCP Notes' port into the selected (monitored/armed) track
     without recording. notes: [{"pitch": 60 | "C4", "start": beats, "duration": beats, "velocity": 1-127}]."""
     from .performer import play_notes as _play
     b = bridge()
@@ -1131,9 +1131,9 @@ def record_notes_to_track(track: TrackRef, notes: List[Dict[str, Any]], start_ba
                           channel: int = 0, beats_per_bar: int = 4) -> Dict[str, Any]:
     """Write notes into a MIDI/instrument track by recording them (the API cannot insert notes directly).
     Steps: select + record-arm the track, put the cursor before start_bar, start recording, play the notes on
-    the 'CubaseMCP Notes' port in sync, stop, restore tempo/arm. speed > 1 temporarily raises the tempo
+    the 'NeoCP Notes' port in sync, stop, restore tempo/arm. speed > 1 temporarily raises the tempo
     (max 300 BPM) to record faster — note positions stay musically identical. quantize_after runs Cubase's
-    Quantize on the new part. Requirements: precount off, track input = 'All MIDI Inputs' or 'CubaseMCP Notes'.
+    Quantize on the new part. Requirements: precount off, track input = 'All MIDI Inputs' or 'NeoCP Notes'.
     notes: [{"pitch": 60 | "C4", "start": beats from start_bar, "duration": beats, "velocity": 1-127}]."""
     from .performer import play_notes as _play, all_notes_off
     b = bridge()
@@ -1162,7 +1162,7 @@ def record_notes_to_track(track: TrackRef, notes: List[Dict[str, Any]], start_ba
         b.set("transport.record", 1.0)
         b.set("transport.play", 1.0)
         b.wait_for(lambda: bool(_flag(b, "transport.record")), 2.0)
-        latency = float(os.environ.get("CUBASE_MCP_RECORD_LATENCY_MS", "0")) / 1000.0
+        latency = float(os.environ.get("NEOCP_RECORD_LATENCY_MS", "0")) / 1000.0
         _play_stop.clear()
         stats = _play(b.link, M.shift(canon, pre_beats), rec_tempo, channel, start_delay=latency, stop=_play_stop)
         time.sleep(60.0 / rec_tempo * 0.5)
@@ -1269,7 +1269,7 @@ def list_audio_inputs() -> Dict[str, Any]:
         default = str(e)
     return {"inputs": devs, "default_listen_device": default,
             "hint": "Route a Cubase output bus to a loopback device (macOS: BlackHole; Windows: VB-Cable) "
-                    "and set CUBASE_MCP_LISTEN_DEVICE to its name."}
+                    "and set NEOCP_LISTEN_DEVICE to its name."}
 
 
 @tool
@@ -1644,13 +1644,13 @@ def auto_mix_pass(start_bar: float = 1.0, bars: float = 8.0, track_target_lufs: 
 
 # ============================================================ resources & prompts
 
-@mcp.resource("cubase://commands")
+@mcp.resource("neocp://commands")
 def resource_commands() -> str:
     """Full catalog of Cubase key commands (category/command/label)."""
     return json.dumps(commands(), ensure_ascii=False)
 
 
-@mcp.resource("cubase://drum-map")
+@mcp.resource("neocp://drum-map")
 def resource_drum_map() -> str:
     """General MIDI drum map used by the generators."""
     return json.dumps(M.DRUMS)

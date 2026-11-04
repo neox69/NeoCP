@@ -2,9 +2,9 @@
 
 Three ports are used:
 
-* ``CubaseMCP to Cubase``   – server -> Cubase (SysEx requests + NRPN value writes)
-* ``CubaseMCP from Cubase`` – Cubase -> server (SysEx responses + state events)
-* ``CubaseMCP Notes``       – server -> Cubase tracks (notes to play / record)
+* ``NeoCP to Cubase``   – server -> Cubase (SysEx requests + NRPN value writes)
+* ``NeoCP from Cubase`` – Cubase -> server (SysEx responses + state events)
+* ``NeoCP Notes``       – server -> Cubase tracks (notes to play / record)
 
 On macOS and Linux the ports are created as virtual ports automatically if they
 do not exist. On Windows create them once with loopMIDI (same names).
@@ -17,11 +17,11 @@ import sys
 import threading
 from typing import Callable, List, Optional
 
-logger = logging.getLogger("cubase_mcp.link")
+logger = logging.getLogger("neocp.link")
 
-PORT_TO_CUBASE = os.environ.get("CUBASE_MCP_PORT_TO_CUBASE", "CubaseMCP to Cubase")
-PORT_FROM_CUBASE = os.environ.get("CUBASE_MCP_PORT_FROM_CUBASE", "CubaseMCP from Cubase")
-PORT_NOTES = os.environ.get("CUBASE_MCP_PORT_NOTES", "CubaseMCP Notes")
+PORT_TO_CUBASE = os.environ.get("NEOCP_PORT_TO_CUBASE", "NeoCP to Cubase")
+PORT_FROM_CUBASE = os.environ.get("NEOCP_PORT_FROM_CUBASE", "NeoCP from Cubase")
+PORT_NOTES = os.environ.get("NEOCP_PORT_NOTES", "NeoCP Notes")
 
 
 class Link:

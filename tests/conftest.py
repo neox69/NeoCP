@@ -9,9 +9,9 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from cubase_mcp.link import Link  # noqa: E402
+from neocp.link import Link  # noqa: E402
 
-SCRIPT = ROOT / "cubase_mcp" / "midi_remote" / "CubaseMCP" / "Bridge" / "CubaseMCP_Bridge.js"
+SCRIPT = ROOT / "neocp" / "midi_remote" / "NeoCP" / "Bridge" / "NeoCP_Bridge.js"
 HARNESS = ROOT / "tests" / "mock_cubase" / "harness.js"
 
 
@@ -68,8 +68,8 @@ def mock_bridge():
     if not shutil.which("node"):
         pytest.skip("node not installed")
     subprocess.run([sys.executable, str(ROOT / "scripts" / "build_midi_remote.py")], check=True, capture_output=True)
-    from cubase_mcp.bridge import CubaseBridge
-    from cubase_mcp import server
+    from neocp.bridge import CubaseBridge
+    from neocp import server
     link = SubprocessLink()
     b = CubaseBridge(link, write_mode="nrpn")
     b.connect(timeout=10)

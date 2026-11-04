@@ -1,0 +1,26 @@
+# NeoCP — AI co-producer for Cubase
+
+Claude (or any MCP client) can now see, control and **listen to** Steinberg Cubase / Nuendo 12+.
+
+## Install (2 minutes)
+* **macOS**: download `NeoCP-<version>-macOS.zip`, unzip it and double-click **Install NeoCP (macOS).command**. If macOS blocks it, right-click → Open.
+* **Windows**: download `NeoCP-<version>-Windows.zip`, unzip it and double-click **Install NeoCP (Windows).bat**. Then create 3 ports in loopMIDI: `NeoCP to Cubase`, `NeoCP from Cubase`, `NeoCP Notes`.
+* Restart Claude Desktop and Cubase, then ask Claude: *"what's in my Cubase project?"*
+
+The installer needs no admin rights and no pre-installed Python. Full guide (Spanish): `docs/CONFIGURAR_CUBASE.md`, inside the ZIP.
+
+## What's inside (71 tools)
+* Live, two-way control through a MIDI Remote script: transport, tempo, locators, a 32-channel mixer with real dB values, sends, EQ, pre-filter, strip modules, inserts, instrument, quick controls and Control Room.
+* All 1454 Cubase key commands, with search.
+* DirectAccess (Cubase 13.0.50+): read and set any plug-in parameter by name. Load plug-ins on Cubase 15+.
+* Music generation: chords and roman numerals, 15 drum styles, bass lines, arpeggios, melodies and song sketches, recorded straight into tracks or exported as MIDI.
+* **Listening**: loudness (LUFS), true peak, spectrum, resonances, key, chords, tempo, song structure, spectrogram images, reference comparison, and hum → notes transcription.
+* **Closed-loop mixing**: gain staging, resonance notching and master loudness matching (listen → adjust → listen again).
+
+## Assets
+| File | What it is |
+|---|---|
+| `NeoCP-*-macOS.zip` / `NeoCP-*-Windows.zip` | One-click installers + wheel + docs |
+| `neocp-*.whl`, `neocp-*.tar.gz` | Python package (`uv tool install` / `pip install`) |
+| `NeoCP_Bridge.midiremote` | Cubase MIDI Remote package (MIDI Remote Manager → Import Script) |
+| `NeoCP_Bridge.js` | Raw MIDI Remote script |

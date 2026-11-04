@@ -11,14 +11,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import protocol as P
 from .link import Link
 
-logger = logging.getLogger("cubase_mcp.bridge")
+logger = logging.getLogger("neocp.bridge")
 
 SETUP_HINT = (
     "Cubase is not answering. Checklist: (1) Cubase/Nuendo 13+ is running with a project open; "
-    "(2) the MIDI Remote script is installed (run `cubase-mcp-install`) and Cubase was restarted "
+    "(2) the MIDI Remote script is installed (run `neocp-install`) and Cubase was restarted "
     "or 'Reload Scripts' was pressed in the MIDI Remote tab; (3) in Studio > MIDI Remote Manager "
-    "the 'CubaseMCP - Bridge' controller is enabled with input 'CubaseMCP to Cubase' and output "
-    "'CubaseMCP from Cubase' (on Windows create these ports with loopMIDI)."
+    "the 'NeoCP - Bridge' controller is enabled with input 'NeoCP to Cubase' and output "
+    "'NeoCP from Cubase' (on Windows create these ports with loopMIDI)."
 )
 
 
@@ -38,7 +38,7 @@ class CubaseBridge:
     def __init__(self, link: Link, write_mode: Optional[str] = None) -> None:
         self.link = link
         self.link.on_sysex = self._on_sysex
-        self.write_mode = (write_mode or os.environ.get("CUBASE_MCP_WRITE_MODE", "nrpn")).lower()
+        self.write_mode = (write_mode or os.environ.get("NEOCP_WRITE_MODE", "nrpn")).lower()
         self._reasm = P.Reassembler()
         self._ids = itertools.count(1)
         self._pending: Dict[int, _Pending] = {}

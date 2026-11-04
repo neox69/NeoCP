@@ -2,7 +2,7 @@
 import json
 import time
 
-from cubase_mcp import server as S
+from neocp import server as S
 
 
 def call(fn, *a, **kw):
@@ -112,5 +112,5 @@ def test_hardcoded_commands_exist():
     import re, inspect
     src = inspect.getsource(S)
     used += re.findall(r'\("([A-Z][\w &]+)", "([^"]+)"\)', src)
-    missing = sorted({u for u in used if u not in known and not u[0].startswith("CUBASE_")})
+    missing = sorted({u for u in used if u not in known and not u[0].startswith("NEOCP_")})
     assert not missing, missing

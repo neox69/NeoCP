@@ -1,11 +1,11 @@
 //-----------------------------------------------------------------------------
-// Cubase MCP Bridge - MIDI Remote script
+// NeoCP Bridge - MIDI Remote script
 //
 // Runs INSIDE Cubase / Nuendo (MIDI Remote API v1, ES5). It exposes the host
-// to the external "cubase-mcp" Python server through two MIDI ports:
+// to the external "neocp" Python server through two MIDI ports:
 //
-//   "CubaseMCP to Cubase"   (Python -> Cubase)  : SysEx JSON-RPC + NRPN writes
-//   "CubaseMCP from Cubase" (Cubase -> Python)  : SysEx responses + events
+//   "NeoCP to Cubase"   (Python -> Cubase)  : SysEx JSON-RPC + NRPN writes
+//   "NeoCP from Cubase" (Cubase -> Python)  : SysEx responses + events
 //
 // Protocol (SysEx, 7-bit clean):
 //   F0 7D 43 4D <type> <id_hi> <id_lo> <seq_hi> <seq_lo> <tot_hi> <tot_lo> <ascii json...> F7
@@ -16,7 +16,7 @@
 // Python can therefore drive values exactly like a hardware controller would
 // (most robust path), or ask the script to call setProcessValue via SysEx.
 //
-// GENERATED FILE: edit midi_remote/CubaseMCP_Bridge.template.js and run
+// GENERATED FILE: edit midi_remote/NeoCP_Bridge.template.js and run
 //   python scripts/build_midi_remote.py
 //-----------------------------------------------------------------------------
 
@@ -42,8 +42,8 @@ var CFG = {
     }
 }
 
-var PORT_IN_NAME = 'CubaseMCP to Cubase'
-var PORT_OUT_NAME = 'CubaseMCP from Cubase'
+var PORT_IN_NAME = 'NeoCP to Cubase'
+var PORT_OUT_NAME = 'NeoCP from Cubase'
 
 // ---- minimal JSON fallback (only if host engine lacks JSON) ----------------
 var J = (typeof JSON !== 'undefined') ? JSON : null
@@ -116,25 +116,25 @@ function toAsciiJson(obj) {
 }
 
 function log(msg) {
-    if (typeof console !== 'undefined' && console.log) console.log('[CubaseMCP] ' + msg)
+    if (typeof console !== 'undefined' && console.log) console.log('[NeoCP] ' + msg)
 }
 
 function round4(v) { return (typeof v === 'number') ? Math.round(v * 10000) / 10000 : v }
 
 // ---- driver / ports -----------------------------------------------------------
 var midiremote_api = require('midiremote_api_v1')
-var driver = midiremote_api.makeDeviceDriver('CubaseMCP', 'Bridge', 'cubase-mcp project')
+var driver = midiremote_api.makeDeviceDriver('NeoCP', 'Bridge', 'neocp project')
 
 var midiIn = driver.mPorts.makeMidiInput(PORT_IN_NAME)
 var midiOut = driver.mPorts.makeMidiOutput(PORT_OUT_NAME)
 
 driver.makeDetectionUnit().detectPortPair(midiIn, midiOut)
-    .expectInputNameContains('CubaseMCP to Cubase')
-    .expectOutputNameContains('CubaseMCP from Cubase')
-// Windows (loopMIDI) users sometimes name ports "CubaseMCP_to_Cubase" etc.
+    .expectInputNameContains('NeoCP to Cubase')
+    .expectOutputNameContains('NeoCP from Cubase')
+// Windows (loopMIDI) users sometimes name ports "NeoCP_to_Cubase" etc.
 driver.makeDetectionUnit().detectPortPair(midiIn, midiOut)
-    .expectInputNameContains('CubaseMCP_to_Cubase')
-    .expectOutputNameContains('CubaseMCP_from_Cubase')
+    .expectInputNameContains('NeoCP_to_Cubase')
+    .expectOutputNameContains('NeoCP_from_Cubase')
 
 var surface = driver.mSurface
 var page = driver.mMapping.makePage('MCP')

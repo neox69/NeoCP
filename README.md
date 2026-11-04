@@ -1,4 +1,4 @@
-# Cubase MCP
+# NeoCP — AI co-producer for Cubase
 
 > 📘 **Guía completa de configuración (Cubase, puertos MIDI, grabación de notas y escucha con BlackHole, VoiceMeeter o loopback): [docs/CONFIGURAR_CUBASE.md](docs/CONFIGURAR_CUBASE.md)**
 
@@ -8,7 +8,7 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 
 ## Por qué es distinto (y mejor)
 
-| | hedidjs/cubase-mcp | ableton-mcp | **cubase-mcp (este)** |
+| | hedidjs/cubase-mcp | ableton-mcp | **neocp (este)** |
 |---|---|---|---|
 | Comunicación | CC MIDI en un sentido | Socket TCP bidireccional | **SysEx JSON-RPC bidireccional + NRPN de 14 bits** |
 | Lee el estado del DAW | ✗ | ✓ | **✓, con espejo en vivo por eventos** |
@@ -35,63 +35,97 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 ## Arquitectura
 
 ```
-Claude ──MCP(stdio)──> cubase_mcp (Python)
-                          │  "CubaseMCP to Cubase"   SysEx peticiones + NRPN escrituras
-                          │  "CubaseMCP from Cubase" SysEx respuestas + eventos de estado
-                          │  "CubaseMCP Notes"       notas para tocar o grabar en pistas
+Claude ──MCP(stdio)──> neocp (Python)
+                          │  "NeoCP to Cubase"   SysEx peticiones + NRPN escrituras
+                          │  "NeoCP from Cubase" SysEx respuestas + eventos de estado
+                          │  "NeoCP Notes"       notas para tocar o grabar en pistas
                           ▼
-              Cubase ── MIDI Remote script "CubaseMCP - Bridge" (JS, MIDI Remote API v1.1–1.3)
+              Cubase ── MIDI Remote script "NeoCP - Bridge" (JS, MIDI Remote API v1.1–1.3)
 ```
 
-* El script de MIDI Remote ([`cubase_mcp/midi_remote/CubaseMCP/Bridge/CubaseMCP_Bridge.js`](cubase_mcp/midi_remote/CubaseMCP/Bridge/CubaseMCP_Bridge.js)) crea unos 2700 controles virtuales. Cada uno se enlaza a un valor de Cubase (volumen, envío, EQ, parámetro, comando...) y también a un NRPN de 14 bits. El servidor los mueve igual que lo haría un controlador hardware, que es la vía de escritura más fiable. Cuando un valor cambia en Cubase, el script lo devuelve por SysEx junto con su texto de pantalla (por ejemplo, `-6.02 dB`).
+* El script de MIDI Remote ([`neocp/midi_remote/NeoCP/Bridge/NeoCP_Bridge.js`](neocp/midi_remote/NeoCP/Bridge/NeoCP_Bridge.js)) crea unos 2700 controles virtuales. Cada uno se enlaza a un valor de Cubase (volumen, envío, EQ, parámetro, comando...) y también a un NRPN de 14 bits. El servidor los mueve igual que lo haría un controlador hardware, que es la vía de escritura más fiable. Cuando un valor cambia en Cubase, el script lo devuelve por SysEx junto con su texto de pantalla (por ejemplo, `-6.02 dB`).
 * Las peticiones (tempo, localizadores, acciones de banco y **DirectAccess**) viajan como JSON en SysEx troceado de 7 bits. El script las procesa en `mOnIdle`, donde la API garantiza el contexto (`activeMapping`).
 * **DirectAccess** (API 1.2+, Cubase 13.0.50+) recorre el árbol de objetos internos de Cubase, lee y escribe cualquier parámetro de plug-in, y en Cubase 15 (API 1.3) carga plug-ins en los slots.
 
 ## Instalación
 
-### 1. Servidor Python
+### Opción rápida: instalador de doble clic (recomendada)
+
+1. Descarga desde **[Releases](https://github.com/neox69/cubasis_mcp/releases/latest)** el ZIP de tu sistema:
+   * `NeoCP-x.y.z-macOS.zip`: descomprímelo y haz doble clic en **Install NeoCP (macOS).command**. Si macOS lo bloquea, haz clic derecho → Abrir.
+   * `NeoCP-x.y.z-Windows.zip`: descomprímelo y haz doble clic en **Install NeoCP (Windows).bat**.
+2. El instalador se encarga de todo, sin pedir permisos de administrador ni Python previo:
+   * instala [uv](https://docs.astral.sh/uv/) y un Python 3.12 propio;
+   * instala NeoCP;
+   * copia el script en Cubase y Nuendo;
+   * configura **Claude Desktop** y **Claude Code**;
+   * en Windows, ofrece instalar loopMIDI;
+   * si ya tienes BlackHole, VoiceMeeter o VB-Cable, deja configurada la escucha.
+3. Reinicia Claude Desktop y Cubase. En Windows, crea además los 3 puertos en loopMIDI.
+
+Para diagnosticar la instalación:
+
+```bash
+neocp-install --check
+```
+
+Para desinstalar:
+
+```bash
+neocp-install --uninstall
+```
+
+Guía detallada: **[docs/CONFIGURAR_CUBASE.md](docs/CONFIGURAR_CUBASE.md)**.
+
+### Opción manual
+
+```bash
+uv tool install --python 3.12 neocp-1.0.0-py3-none-any.whl
+```
+
+También puedes instalar con pip:
 
 ```bash
 pip install git+https://github.com/neox69/cubasis_mcp.git
 ```
 
-O desde una copia local del repositorio:
+Después ejecuta el instalador del script y de la configuración de Claude:
 
 ```bash
-pip install -e .
+neocp-install
 ```
 
-> Si `python-rtmidi` no se instala, normalmente es porque no hay un wheel precompilado para tu versión de Python. Usa Python 3.10–3.12 en macOS o Windows. En Linux instala antes `libasound2-dev` y `libjack-dev`.
+> Si instalas con pip y `python-rtmidi` falla, usa Python 3.10–3.12 o `uv`. En Linux instala antes `libasound2-dev` y `libjack-dev`.
 
-### 2. Puertos MIDI
+### Puertos MIDI
 
-* **macOS / Linux**: no hay que hacer nada. El servidor crea los puertos virtuales `CubaseMCP to Cubase`, `CubaseMCP from Cubase` y `CubaseMCP Notes`. Si prefieres que existan siempre, crea tres buses IAC con esos nombres (Configuración Audio MIDI → Estudio MIDI → IAC Driver).
+* **macOS / Linux**: no hay que hacer nada. El servidor crea los puertos virtuales `NeoCP to Cubase`, `NeoCP from Cubase` y `NeoCP Notes`. Si prefieres que existan siempre, crea tres buses IAC con esos nombres (Configuración Audio MIDI → Estudio MIDI → IAC Driver).
 * **Windows**: crea esos tres puertos con [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html), con los mismos nombres.
 
-### 3. Script de MIDI Remote en Cubase
+### Script de MIDI Remote (si no usas el instalador)
 
 ```bash
-cubase-mcp-install
+neocp-install
 ```
 
 Si usas Nuendo:
 
 ```bash
-cubase-mcp-install --app Nuendo
+neocp-install --app Nuendo
 ```
 
-El script se copia en `Documentos/Steinberg/Cubase/MIDI Remote/Driver Scripts/Local/CubaseMCP/Bridge/`. En Cubase, abre la pestaña **MIDI Remote** de la zona inferior y pulsa **Reload Scripts**, o reinicia Cubase. Con los puertos creados, el controlador **CubaseMCP – Bridge** se detecta solo. Si no aparece, añádelo a mano con **+** en la misma pestaña: entrada `CubaseMCP to Cubase`, salida `CubaseMCP from Cubase`.
+El script se copia en `Documentos/Steinberg/Cubase/MIDI Remote/Driver Scripts/Local/NeoCP/Bridge/`. En Cubase, abre la pestaña **MIDI Remote** de la zona inferior y pulsa **Reload Scripts**, o reinicia Cubase. Con los puertos creados, el controlador **NeoCP – Bridge** se detecta solo. Si no aparece, añádelo a mano con **+** en la misma pestaña: entrada `NeoCP to Cubase`, salida `NeoCP from Cubase`.
 
-> Cubase quita automáticamente de "All MIDI Inputs" los puertos que usa un MIDI Remote. El puerto `CubaseMCP Notes` es el que llega a las pistas.
+> Cubase quita automáticamente de "All MIDI Inputs" los puertos que usa un MIDI Remote. El puerto `NeoCP Notes` es el que llega a las pistas.
 
-### 4. Cliente MCP
+### Cliente MCP (lo hace `neocp-install` automáticamente)
 
 **Claude Desktop** (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "cubase": { "command": "cubase-mcp" }
+    "neocp": { "command": "neocp" }
   }
 }
 ```
@@ -99,7 +133,7 @@ El script se copia en `Documentos/Steinberg/Cubase/MIDI Remote/Driver Scripts/Lo
 **Claude Code**:
 
 ```bash
-claude mcp add cubase -- cubase-mcp
+claude mcp add neocp -- neocp
 ```
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
@@ -128,7 +162,7 @@ Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
 **Avanzado**: `list_controls` y `set_control`, que dan acceso directo a cualquier control del puente
 
-Recursos: `cubase://commands` y `cubase://drum-map`. Prompt: `produce_track`.
+Recursos: `neocp://commands` y `neocp://drum-map`. Prompt: `produce_track`.
 
 ## Claude puede escuchar Cubase
 
@@ -148,7 +182,7 @@ Hay tres maneras, de menos a más configuración:
 **Cómo llevar el audio de Cubase al servidor (solo para el punto 2):**
 * **macOS**: instala [BlackHole 2ch](https://existential.audio/blackhole/). En Cubase, en *Studio → Audio Connections → Outputs*, crea un bus de salida hacia BlackHole y envíale el Stereo Out; también puedes crear un dispositivo multisalida (altavoces + BlackHole) en Configuración Audio MIDI.
 * **Windows**: instala [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) y crea en Cubase un bus de salida hacia "CABLE Input". El servidor escucha "CABLE Output".
-* El servidor detecta solo los dispositivos loopback. Para fijar uno concreto, usa `CUBASE_MCP_LISTEN_DEVICE=<nombre>`.
+* El servidor detecta solo los dispositivos loopback. Para fijar uno concreto, usa `NEOCP_LISTEN_DEVICE=<nombre>`.
 
 El análisis es numpy puro y está verificado con señales de referencia. Un seno de 1 kHz a 0 dBFS en estéreo da 0,0 LUFS (el valor de la norma), y la progresión C–Am–F–G se reconoce como Do mayor con sus cuatro acordes.
 
@@ -159,19 +193,19 @@ La MIDI Remote API **no** permite insertar eventos MIDI en las partes; es una li
 1. selecciona la pista y la arma para grabar;
 2. coloca el cursor con pre-roll;
 3. opcionalmente sube el tempo (`speed=2` graba al doble de velocidad y las posiciones musicales no cambian) y empieza a grabar;
-4. toca las notas por `CubaseMCP Notes` con temporización de alta precisión;
+4. toca las notas por `NeoCP Notes` con temporización de alta precisión;
 5. para, restaura el tempo y el armado, y si se pide, cuantiza (`quantize_after=True`).
 
-Requisitos: **precount desactivado** y la entrada de la pista en *All MIDI Inputs* o en `CubaseMCP Notes`. Como alternativa, `export_midi_file` genera un `.mid` multipista en `~/Documents/CubaseMCP` para arrastrarlo al proyecto.
+Requisitos: **precount desactivado** y la entrada de la pista en *All MIDI Inputs* o en `NeoCP Notes`. Como alternativa, `export_midi_file` genera un `.mid` multipista en `~/Documents/NeoCP` para arrastrarlo al proyecto.
 
 ## Variables de entorno
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `CUBASE_MCP_WRITE_MODE` | `nrpn` | `sysex` hace que el script llame a `setProcessValue` en lugar de usar NRPN |
-| `CUBASE_MCP_PORT_TO_CUBASE` / `_FROM_CUBASE` / `_NOTES` | nombres de arriba | nombres de los puertos |
-| `CUBASE_MCP_RECORD_LATENCY_MS` | `0` | compensa la latencia al grabar notas |
-| `CUBASE_MCP_EXPORT_DIR` | `~/Documents/CubaseMCP` | carpeta donde se exportan los `.mid` |
+| `NEOCP_WRITE_MODE` | `nrpn` | `sysex` hace que el script llame a `setProcessValue` en lugar de usar NRPN |
+| `NEOCP_PORT_TO_CUBASE` / `_FROM_CUBASE` / `_NOTES` | nombres de arriba | nombres de los puertos |
+| `NEOCP_RECORD_LATENCY_MS` | `0` | compensa la latencia al grabar notas |
+| `NEOCP_EXPORT_DIR` | `~/Documents/NeoCP` | carpeta donde se exportan los `.mid` |
 
 ## Compatibilidad
 
@@ -205,5 +239,29 @@ pytest
 * No se pueden renombrar pistas ni escribir notas directamente; las notas se graban, como se explica arriba.
 * Algunos comandos abren diálogos (por ejemplo, Añadir pista de instrumento o Importar MIDI).
 * La API no expone marcadores ni eventos del proyecto. Para navegar se usan los comandos `Locate Next Marker` y similares.
+
+## Publicar una release (mantenedores)
+
+Sube `__version__` en `neocp/__init__.py` y en `pyproject.toml`. Crea la etiqueta de versión:
+
+```bash
+git tag v1.0.1
+```
+
+Súbela a GitHub:
+
+```bash
+git push origin v1.0.1
+```
+
+El workflow `.github/workflows/release.yml` ejecuta los tests, construye el wheel y publica la release con los ZIP de macOS y Windows, el `.midiremote` y el script `.js`. Para generar los paquetes en local:
+
+```bash
+python -m build
+```
+
+```bash
+python scripts/make_release.py
+```
 
 Licencia: MIT.

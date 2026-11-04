@@ -1,4 +1,4 @@
-from cubase_mcp import protocol as P
+from neocp import protocol as P
 
 
 def test_roundtrip_chunked():

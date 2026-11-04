@@ -1,4 +1,4 @@
-"""Real-time note playback on the "CubaseMCP Notes" port.
+"""Real-time note playback on the "NeoCP Notes" port.
 
 Cubase's MIDI Remote API cannot write MIDI events into parts, so notes reach the
 project the same way a keyboard player's would: they are played on a virtual

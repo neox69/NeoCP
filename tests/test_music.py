@@ -1,6 +1,6 @@
 import mido
 
-from cubase_mcp import music as M
+from neocp import music as M
 
 
 def test_note_names():

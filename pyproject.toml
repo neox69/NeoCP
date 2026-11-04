@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cubase-mcp"
+name = "neocp"
 version = "1.0.0"
 description = "MCP server for Steinberg Cubase / Nuendo: full bidirectional control through the MIDI Remote API"
 readme = "README.md"
@@ -22,11 +22,11 @@ dependencies = [
 dev = ["pytest>=7"]
 
 [project.scripts]
-cubase-mcp = "cubase_mcp.server:main"
-cubase-mcp-install = "cubase_mcp.install:main"
+neocp = "neocp.server:main"
+neocp-install = "neocp.install:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["cubase_mcp"]
+packages = ["neocp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
