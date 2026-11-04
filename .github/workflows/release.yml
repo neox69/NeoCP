@@ -3,6 +3,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.0.0). Creates tag v<version> on the selected branch."
+        required: true
+        default: "1.0.0"
 permissions:
   contents: write
 jobs:
@@ -24,7 +29,10 @@ jobs:
       - run: python scripts/make_release.py --repo "${{ github.repository }}"
       - uses: softprops/action-gh-release@v2
         with:
-          name: NeoCP ${{ github.ref_name }}
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: NeoCP ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+          make_latest: true
           body_path: RELEASE_NOTES.md
           files: |
             dist/*.whl
