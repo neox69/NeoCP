@@ -13,9 +13,9 @@ from typing import Any, Dict, List, Optional, Union
 TrackRef = Union[int, str]
 
 try:  # mcp 2.x
-    from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver import MCPServer as _Server, Image
 except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server
+    from mcp.server.fastmcp import FastMCP as _Server, Image
 
 from . import __version__
 from . import music as M
@@ -39,7 +39,9 @@ How Cubase thinks (important):
 * Plug-in parameters / loading plug-ins use DirectAccess (Cubase 13.0.50+, plug-in loading 15+).
 * You can LISTEN: listen_to_cubase plays a section and analyses the audio (LUFS, spectrum, key, chords,
   tempo, mix suggestions); listen_to_meters works without any audio routing; transcribe_audio turns a hummed
-  melody into notes; compare_to_reference compares with a reference track.
+  melody into notes; compare_to_reference compares with a reference track; show_spectrogram lets you SEE it;
+  analyze_song_structure finds intro/verse/chorus; gain_stage_tracks, fix_resonances, match_loudness and
+  auto_mix_pass close the loop (listen -> adjust -> listen again).
 * Values are reported with Cubase's own display strings (e.g. "-6.02 dB"), use them to verify.
 Always call get_session_info first to see tracks and transport state.
 """
@@ -86,7 +88,9 @@ def tool(fn):
     def wrapper(*a, **kw):
         try:
             res = fn(*a, **kw)
-            return res if isinstance(res, str) else _ok(res)
+            if isinstance(res, (str, list)) or type(res).__name__ == "Image":
+                return res
+            return _ok(res)
         except CubaseError as e:
             return _ok({"error": str(e)})
         except (ValueError, KeyError, TypeError) as e:
@@ -1248,7 +1252,8 @@ def _finish_analysis(audio, sr, source: str, analyses: Optional[List[str]], targ
     except Exception as e:  # soundfile missing
         rep["saved_wav"] = f"not saved: {e}"
     _last_listen.clear()
-    _last_listen.update({"report": rep, "path": rep.get("saved_wav")})
+    _last_listen.update({"report": rep, "path": rep.get("saved_wav"), "audio": audio, "sr": sr, "bpm": bpm,
+                         "start_bar": start_bar if start_bar is not None else 1.0})
     return rep
 
 
@@ -1445,6 +1450,196 @@ def transcribe_audio(path: Optional[str] = None, seconds: float = 8.0, device: O
         r = record_notes_to_track.__wrapped__(record_to_track, notes, start_bar)
         res["recorded"] = json.loads(r) if isinstance(r, str) else r
     return res
+
+
+# ============================================================ seeing, structure, auto-mix
+
+def _source_audio(path: Optional[str]):
+    """Audio of a file, or of the last listen."""
+    from . import audio as A
+    if path:
+        d, sr = A.load_file(os.path.expanduser(path), 900)
+        return d, sr, None, 1.0, path
+    if "audio" not in _last_listen:
+        raise ValueError("nothing heard yet: give a path or call listen_to_cubase first")
+    L = _last_listen
+    return L["audio"], L["sr"], L.get("bpm"), L.get("start_bar", 1.0), L["report"].get("source")
+
+
+@tool
+def show_spectrogram(path: Optional[str] = None, fmin: float = 30.0, fmax: float = 16000.0,
+                     dynamic_range_db: float = 80.0) -> list:
+    """SEE the sound: returns a spectrogram image (log frequency, bar grid) of an audio file or of the last
+    listen_to_cubase / listen capture, plus a legend. Great for spotting masking, resonances, muddy lows,
+    missing highs, clipping bursts, arrangement density and section changes."""
+    from . import audio as A
+    audio, sr, bpm, start_bar, src = _source_audio(path)
+    png, legend = A.spectrogram_png(audio, sr, fmin=fmin, fmax=fmax, dyn_db=dynamic_range_db, bpm=bpm,
+                                    start_bar=start_bar)
+    legend["source"] = src
+    return [Image(data=png, format="png"), json.dumps(legend, ensure_ascii=False)]
+
+
+@tool
+def analyze_song_structure(path: Optional[str] = None, start_bar: float = 1.0, bars: Optional[float] = None,
+                           bpm: Optional[float] = None, mark_in_project: bool = False,
+                           beats_per_bar: int = 4) -> Dict[str, Any]:
+    """Detect the song form (intro / verse / chorus / bridge / outro, repeats labelled A, B, C...) with bar
+    numbers. Source: an audio file, the last capture, or (bars given) LISTEN to that many bars of the project.
+    mark_in_project inserts a Cubase marker at the start of every section."""
+    from . import audio as A
+    if bars:
+        listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness"])
+        audio, sr, bpm_l, start_bar, src = _source_audio(None)
+    else:
+        audio, sr, bpm_l, sb, src = _source_audio(path)
+        if not path:
+            start_bar = sb
+    bpm = bpm or bpm_l
+    if bpm is None and _bridge and _bridge.connected and not path:
+        bpm = _bridge.transport.get("tempo")
+    res = A.song_structure(audio, sr, bpm, beats_per_bar, start_bar)
+    res["source"] = src
+    res.pop("novelty", None)
+    if mark_in_project:
+        b = bridge()
+        for sec in res["sections"]:
+            b.request("time", locator="cursor", value=_position_string(b, sec["start_bar"], beats_per_bar=beats_per_bar))
+            time.sleep(0.08)
+            b.command("Marker", "Insert Marker")
+            time.sleep(0.08)
+        res["markers_inserted"] = len(res["sections"])
+        res["note"] = "The MIDI Remote API cannot name markers; names are listed here (rename them in the Marker window)."
+    return res
+
+
+def _fader_db(b: CubaseBridge, key: str) -> Optional[float]:
+    return _parse_number(b.display(key))
+
+
+def _nudge_fader(b: CubaseBridge, key: str, delta_db: float, max_db: float = 6.0) -> Dict[str, Any]:
+    cur = _fader_db(b, key)
+    if cur is None or cur == float("-inf"):
+        return {"skipped": "fader at -inf or unreadable"}
+    target = max(-60.0, min(max_db, cur + delta_db))
+    r = _set_level(b, key, target, None)
+    return {"from_db": cur, "to_db": _fader_db(b, key), "requested_db": round(target, 2), "display": r.get("display")}
+
+
+@tool
+def gain_stage_tracks(target_lufs: float = -20.0, tracks: Optional[List[TrackRef]] = None, start_bar: float = 1.0,
+                      bars: float = 4.0, tolerance_lu: float = 1.0, apply: bool = True) -> Dict[str, Any]:
+    """Listen to each track SOLO over a section, measure its loudness (LUFS) and move its fader so every track
+    sits near target_lufs (classic gain staging; then balance by ear). apply=False only reports."""
+    b = bridge()
+    idxs = [_resolve_track(b, t) for t in tracks] if tracks else [c["index"] for c in b.bank_channels()]
+    out = []
+    for idx in idxs:
+        pre = b.track_prefix(idx)
+        name = b.objects[pre]["title"]
+        rep = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness"], solo_track=idx)
+        lufs = (rep.get("loudness") or {}).get("integrated_lufs")
+        row: Dict[str, Any] = {"track": name, "measured_lufs": lufs}
+        if lufs is None or lufs <= -69:
+            row["skipped"] = "silent in this section"
+        else:
+            delta = target_lufs - lufs
+            row["delta_db"] = round(delta, 2)
+            if apply and abs(delta) > tolerance_lu:
+                row["fader"] = _nudge_fader(b, f"{pre}.volume", delta)
+        out.append(row)
+    return {"target_lufs": target_lufs, "section": [start_bar, start_bar + bars], "tracks": out}
+
+
+@tool
+def fix_resonances(track: TrackRef, start_bar: float = 1.0, bars: float = 4.0, max_cuts: int = 2,
+                   threshold_db: float = 8.0, max_cut_db: float = 6.0, q: float = 6.0, apply: bool = True,
+                   verify: bool = True) -> Dict[str, Any]:
+    """Listen to a track solo, find narrow resonances, cut them with the channel EQ (bands 2 and 3, peak
+    filters), then listen again to verify. Cut depth = min(max_cut_db, excess/2)."""
+    b = bridge()
+    idx = _resolve_track(b, track)
+    before = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["spectrum", "loudness"], solo_track=idx)
+    if "error" in before:
+        return before
+    res = [r for r in before["spectrum"]["resonances"] if r["excess_db"] >= threshold_db][:max(1, min(2, max_cuts))]
+    applied = []
+    if apply:
+        for band, r in zip((2, 3), res):
+            cut = -min(max_cut_db, r["excess_db"] / 2)
+            eq = set_eq_band.__wrapped__(band, track=idx, on=True, gain_db=round(cut, 1), freq_hz=r["freq_hz"], q=q)
+            applied.append({"band": band, "freq_hz": r["freq_hz"], "note": r["note"], "gain_db": round(cut, 1), "eq": eq})
+    result: Dict[str, Any] = {"track": b.objects[b.track_prefix(idx)]["title"], "resonances_found": res, "eq_cuts": applied}
+    if verify and applied:
+        after = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["spectrum", "loudness"], solo_track=idx)
+        result["resonances_after"] = (after.get("spectrum") or {}).get("resonances")
+        result["loudness_before_after"] = [(before.get("loudness") or {}).get("integrated_lufs"),
+                                           (after.get("loudness") or {}).get("integrated_lufs")]
+    if not res:
+        result["note"] = f"no resonance above {threshold_db} dB"
+    return result
+
+
+def _output_bus_prefix(b: CubaseBridge, bus: Optional[str]) -> str:
+    cands = [(f"io{i}", (b.objects.get(f"io{i}") or {}).get("title")) for i in range(8)]
+    cands = [(p, n) for p, n in cands if n]
+    if bus:
+        for p, n in cands:
+            if bus.lower() in n.lower():
+                return p
+        raise CubaseError(f"no bus named '{bus}' (busses: {[n for _, n in cands]})")
+    for p, n in cands:
+        if "stereo out" in n.lower() or "main" in n.lower() or "out" in n.lower():
+            return p
+    if cands:
+        return cands[-1][0]
+    raise CubaseError("no output bus visible")
+
+
+@tool
+def match_loudness(target_lufs: float = -14.0, start_bar: float = 1.0, bars: float = 8.0, bus: Optional[str] = None,
+                   max_passes: int = 3, tolerance_lu: float = 0.5, max_gain_db: float = 6.0) -> Dict[str, Any]:
+    """Listen to the mix and move the output bus fader until the integrated loudness reaches target_lufs
+    (e.g. -14 streaming, -16 podcasts/Apple, -9 club). Warns when true peak exceeds -1 dBTP (add a limiter)."""
+    b = bridge()
+    pre = _output_bus_prefix(b, bus)
+    passes = []
+    for _ in range(max(1, max_passes)):
+        rep = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness"])
+        L = rep.get("loudness") or {}
+        lufs = L.get("integrated_lufs")
+        row = {"lufs": lufs, "true_peak_dbtp": L.get("true_peak_dbtp"), "fader_db": _fader_db(b, f"{pre}.volume")}
+        passes.append(row)
+        if lufs is None or lufs <= -69 or abs(target_lufs - lufs) <= tolerance_lu:
+            break
+        row["adjust"] = _nudge_fader(b, f"{pre}.volume", target_lufs - lufs, max_db=max_gain_db)
+    last = passes[-1]
+    out = {"bus": (b.objects.get(pre) or {}).get("title"), "target_lufs": target_lufs, "passes": passes}
+    if last.get("true_peak_dbtp") is not None and last["true_peak_dbtp"] > -1:
+        out["warning"] = "true peak above -1 dBTP: insert a limiter (ceiling -1 dB) on the output bus before raising loudness"
+    return out
+
+
+@tool
+def auto_mix_pass(start_bar: float = 1.0, bars: float = 8.0, track_target_lufs: float = -20.0,
+                  master_target_lufs: float = -14.0, fix_resonances_on: Optional[List[TrackRef]] = None,
+                  do_gain_staging: bool = True, do_master: bool = True) -> Dict[str, Any]:
+    """Closed-loop mix assistant: (1) listen to the mix; (2) gain-stage every track solo; (3) notch resonances
+    on chosen tracks; (4) bring the master to target loudness; (5) listen again and report before/after with
+    remaining suggestions. Every change is a normal Cubase edit (undo with project_action('undo') per step)."""
+    steps: Dict[str, Any] = {}
+    before = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars)
+    steps["before"] = {k: before.get(k) for k in ("loudness", "stereo", "suggestions")}
+    if do_gain_staging:
+        steps["gain_staging"] = gain_stage_tracks.__wrapped__(track_target_lufs, None, start_bar, min(bars, 4.0))
+    if fix_resonances_on:
+        steps["resonances"] = [fix_resonances.__wrapped__(t, start_bar, min(bars, 4.0), verify=False)
+                               for t in fix_resonances_on]
+    if do_master:
+        steps["master"] = match_loudness.__wrapped__(master_target_lufs, start_bar, bars)
+    after = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars)
+    steps["after"] = {k: after.get(k) for k in ("loudness", "stereo", "spectrum", "suggestions")}
+    return steps
 
 
 # ============================================================ resources & prompts

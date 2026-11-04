@@ -1,4 +1,5 @@
 import json
+import time
 
 import numpy as np
 import pytest
@@ -84,3 +85,65 @@ def test_listen_to_cubase(mock_bridge, monkeypatch, tmp_path):
     assert r["loudness"]["integrated_lufs"] < 0
     m = json.loads(S.listen_to_meters(seconds=0.3))
     assert "levels" in m
+
+
+def _song():
+    rng = np.random.default_rng(0)
+    bar = 2.0
+
+    def t(fs, d, amp=0.3, noise=0.0):
+        x = tone(fs, d, amp)
+        return x + noise * rng.standard_normal(len(x))
+    verse = np.concatenate([t([220, 261.6, 329.6], bar), t([174.6, 220, 261.6], bar)] * 4)
+    chorus = np.concatenate([t([261.6, 329.6, 392], bar, 0.6, 0.05), t([196, 246.9, 293.7], bar, 0.6, 0.05)] * 4)
+    return np.concatenate([t([110], bar * 4, 0.1), verse, chorus, verse, chorus, t([293.7, 349.2, 440], bar * 4, 0.4),
+                           chorus, t([110], bar * 4, 0.1)])
+
+
+def test_structure_and_spectrogram(tmp_path):
+    from cubase_mcp import server as S
+    song = _song()
+    r = A.song_structure(song, SR, 120)
+    assert [s["name"] for s in r["sections"]] == ["intro", "verse", "chorus", "verse", "chorus", "bridge", "chorus", "outro"]
+    assert [s["start_bar"] for s in r["sections"]] == [1, 5, 13, 21, 29, 37, 41, 49]
+    p = tmp_path / "song.wav"
+    A.save_wav(str(p), song, SR)
+    out = S.show_spectrogram(path=str(p))
+    assert type(out[0]).__name__ == "Image" and out[0].data[:4] == b"\x89PNG"
+    r = json.loads(S.analyze_song_structure(path=str(p), bpm=120))
+    assert r["form"] == "ABCBCDCA"
+
+
+class _FakeRec:
+    device_name = "BlackHole 2ch"
+    signal = None
+
+    def __init__(self, *a, **k):
+        pass
+
+    def start(self):
+        return self
+
+    def stop(self):
+        x = _FakeRec.signal
+        return np.stack([x, x], 1).astype(np.float32), SR
+
+
+def test_closed_loop_tools(mock_bridge, monkeypatch, tmp_path):
+    from cubase_mcp import capture, server as S
+    monkeypatch.setenv("CUBASE_MCP_EXPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(capture, "Recorder", _FakeRec)
+    rng = np.random.default_rng(1)
+    _FakeRec.signal = 0.05 * rng.standard_normal(SR * 4) + tone([700], 4, 0.2)  # noise + 700 Hz ring
+    r = json.loads(S.fix_resonances("Drums", bars=1, verify=False))
+    assert r["eq_cuts"] and abs(r["eq_cuts"][0]["freq_hz"] - 700) < 10
+    r = json.loads(S.gain_stage_tracks(target_lufs=-20, tracks=["Bass"], bars=1))
+    assert r["tracks"][0]["measured_lufs"] is not None and "fader" in r["tracks"][0]
+    r = json.loads(S.match_loudness(target_lufs=-14, bars=1, max_passes=2))
+    assert r["bus"] == "Stereo Out" and len(r["passes"]) == 2
+    r = json.loads(S.analyze_song_structure(bpm=120, mark_in_project=True))
+    assert r["markers_inserted"] >= 1
+    time.sleep(0.1)
+    assert "Marker/Insert Marker" in mock_bridge.link.query()["executed"]
+    r = json.loads(S.auto_mix_pass(bars=1, do_gain_staging=False, fix_resonances_on=["Keys"]))
+    assert "before" in r and "after" in r and "master" in r

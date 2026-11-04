@@ -501,3 +501,172 @@ def compare(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
         tips.append(f"Loudness differs by {lu} LU from the reference.")
     out["suggestions"] = tips or ["Balance is close to the reference."]
     return out
+
+
+# ----------------------------------------------------------------------------- spectrogram image
+
+_CMAP = np.array([[0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99], [212, 72, 66],
+                  [245, 125, 21], [250, 193, 39], [252, 255, 164]], dtype=np.float64)
+
+
+def _png(rgb: np.ndarray) -> bytes:
+    import struct
+    import zlib
+    h, w, _ = rgb.shape
+    raw = b"".join(b"\x00" + rgb[y].astype(np.uint8).tobytes() for y in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def spectrogram_png(audio: np.ndarray, sr: int, width: int = 1200, height: int = 420, fmin: float = 30.0,
+                    fmax: float = 16000.0, dyn_db: float = 80.0, bpm: Optional[float] = None,
+                    beats_per_bar: int = 4, start_bar: float = 1.0) -> Tuple[bytes, Dict[str, Any]]:
+    """Log-frequency spectrogram as PNG bytes. Grid: horizontal lines at 100 Hz, 1 kHz, 10 kHz
+    (and dimmer at 50/200/500/2k/5k), vertical lines at every bar when bpm is given (brighter every 4 bars)."""
+    mono = to_float(audio).mean(axis=1)
+    n_fft = 4096
+    hop = max(64, int(len(mono) / width)) if len(mono) > n_fft else 256
+    S = stft_mag(mono, n_fft, hop)
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr)
+    fmax = min(fmax, sr / 2)
+    rows = np.geomspace(fmax, fmin, height)  # top = high frequencies
+    P = 20 * np.log10(S + 1e-9)
+    img = np.empty((height, S.shape[0]))
+    for i in range(S.shape[0]):
+        img[:, i] = np.interp(rows, freqs, P[i])
+    top = img.max()
+    norm = np.clip((img - (top - dyn_db)) / dyn_db, 0, 1)
+    if S.shape[0] != width:
+        xs = np.linspace(0, S.shape[0] - 1, width)
+        norm = np.stack([np.interp(xs, np.arange(S.shape[0]), r) for r in norm])
+    pos = norm * (len(_CMAP) - 1)
+    lo = np.floor(pos).astype(int)
+    hi = np.minimum(lo + 1, len(_CMAP) - 1)
+    frac = (pos - lo)[..., None]
+    rgb = _CMAP[lo] * (1 - frac) + _CMAP[hi] * frac
+    for f, strength in ((100, 0.55), (1000, 0.55), (10000, 0.55), (50, 0.25), (200, 0.25), (500, 0.25),
+                        (2000, 0.25), (5000, 0.25)):
+        if fmin < f < fmax:
+            y = int(round(np.argmin(np.abs(rows - f))))
+            rgb[y] = rgb[y] * (1 - strength) + 255 * strength
+    duration = len(mono) / sr
+    if bpm:
+        bar_s = 60.0 / bpm * beats_per_bar
+        k = 0
+        while k * bar_s < duration:
+            x = int(k * bar_s / duration * (width - 1))
+            strength = 0.5 if (k % 4 == 0) else 0.2
+            rgb[:, x] = rgb[:, x] * (1 - strength) + 255 * strength
+            k += 1
+    legend = {"width_px": width, "height_px": height, "duration_s": round(duration, 2),
+              "x_axis": "time, left to right" + (f"; vertical lines = bars (bright every 4 bars, first line = bar {start_bar})" if bpm else ""),
+              "y_axis": f"log frequency {fmin:.0f} Hz (bottom) to {fmax:.0f} Hz (top); bright lines at 100 Hz, 1 kHz, 10 kHz",
+              "colors": f"black = silent ... purple/red ... yellow/white = loudest, {dyn_db:.0f} dB range"}
+    return _png(rgb), legend
+
+
+# ----------------------------------------------------------------------------- structure
+
+def song_structure(audio: np.ndarray, sr: int, bpm: Optional[float] = None, beats_per_bar: int = 4,
+                   start_bar: float = 1.0, kernel_bars: int = 4, min_section_bars: int = 4,
+                   similarity: float = 0.8) -> Dict[str, Any]:
+    """Segment a song into sections (Foote novelty on per-bar chroma + timbre features), label repeats
+    (A, B, C...) and guess names (intro / verse / chorus / bridge / outro)."""
+    a = to_float(audio)
+    mono = a.mean(axis=1)
+    if not bpm:
+        bpm = detect_tempo(mono, sr).get("bpm") or 120.0
+    bar_len = int(round(60.0 / bpm * beats_per_bar * sr))
+    nbars = len(mono) // bar_len
+    if nbars < 2:
+        return {"bpm": bpm, "bars": nbars, "sections": []}
+    feats, energy = [], []
+    freqs = np.fft.rfftfreq(4096, 1 / sr)
+    band_idx = [(freqs >= lo) & (freqs < hi) for _, lo, hi in BANDS]
+    for k in range(nbars):
+        seg = mono[k * bar_len:(k + 1) * bar_len]
+        S = stft_mag(seg, 4096, 2048)
+        chroma = chromagram(seg, sr, 4096, 2048).mean(axis=0)
+        pw = (S.astype(np.float64) ** 2).mean(axis=0)
+        bands = np.array([10 * np.log10(pw[m].sum() + 1e-12) for m in band_idx])
+        bands = (bands - bands.mean()) / 10.0
+        rms = math.sqrt(float((seg.astype(np.float64) ** 2).mean()))
+        energy.append(db(rms))
+        f = np.concatenate([chroma / (np.linalg.norm(chroma) + 1e-9), bands * 0.5])
+        feats.append(f / (np.linalg.norm(f) + 1e-9))
+    F = np.array(feats)
+    energy = np.array(energy)
+    en = (energy - energy.max()) / 20.0
+    F = np.hstack([F, en[:, None]])
+    F = F - F.mean(axis=0)  # centre: compare bars relative to the song average
+    F /= np.linalg.norm(F, axis=1, keepdims=True) + 1e-9
+    SSM = F @ F.T
+    L = kernel_bars
+    nov = np.zeros(nbars)
+    for i in range(nbars):
+        if i == 0:
+            continue
+        tot, cnt = 0.0, 0
+        Li = min(L, i, nbars - i)  # symmetric kernel that fits (no edge bias)
+        for u in range(-Li, Li):
+            for v in range(-Li, Li):
+                sign = 1 if (u < 0) == (v < 0) else -1
+                tot += sign * SSM[i + u, i + v]
+                cnt += 1
+        nov[i] = tot / max(cnt, 1)
+    nov = np.maximum(nov, 0)
+    thr = 0.08 * nov.max()  # any clear local peak of the novelty curve
+    bounds = [0]
+    for i in np.argsort(-nov):
+        if nov[i] < thr or i == 0:
+            continue
+        if not (nov[i] >= nov[max(0, i - 1)] and nov[i] >= nov[min(nbars - 1, i + 1)]):
+            continue
+        if all(abs(i - b_) >= min_section_bars for b_ in bounds) and nbars - i >= min_section_bars // 2:
+            bounds.append(int(i))
+    bounds = sorted(bounds) + [nbars]
+    segs = []
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        v = F[s:e].mean(axis=0)
+        segs.append({"start": s, "end": e, "vec": v / (np.linalg.norm(v) + 1e-9), "energy": float(energy[s:e].mean())})
+    labels: List[str] = []
+    protos: List[np.ndarray] = []
+    for sg in segs:
+        sims = [float(sg["vec"] @ p) for p in protos]
+        if sims and max(sims) >= similarity:
+            labels.append(chr(65 + int(np.argmax(sims))))
+        else:
+            protos.append(sg["vec"])
+            labels.append(chr(64 + len(protos)))
+    counts = {l: labels.count(l) for l in labels}
+    e_by_label = {l: np.mean([sg["energy"] for sg, x in zip(segs, labels) if x == l]) for l in counts}
+    bars_by_label = {l: sum(sg["end"] - sg["start"] for sg, x in zip(segs, labels) if x == l) for l in counts}
+    last = len(segs) - 1
+    edge = {l for l in counts if all(i in (0, last) for i, x in enumerate(labels) if x == l) and len(segs) > 2}
+    repeated = [l for l in counts if counts[l] > 1 and l not in edge]
+    chorus = max(repeated, key=lambda l: e_by_label[l]) if repeated else None
+    others = [l for l in repeated if l != chorus]
+    verse = max(others, key=lambda l: (bars_by_label[l], -e_by_label[l])) if others else None
+    out = []
+    for i, (sg, lab) in enumerate(zip(segs, labels)):
+        if lab == chorus:
+            name = "chorus"
+        elif lab == verse:
+            name = "verse"
+        elif i == 0 and (lab in edge or counts[lab] == 1):
+            name = "intro"
+        elif i == last and (lab in edge or counts[lab] == 1):
+            name = "outro"
+        elif counts[lab] == 1:
+            name = "bridge" if sg["energy"] >= np.median(energy) - 3 else "breakdown"
+        else:
+            name = f"section {lab}"
+        out.append({"label": lab, "name": name, "start_bar": round(start_bar + sg["start"], 2),
+                    "end_bar": round(start_bar + sg["end"], 2), "bars": sg["end"] - sg["start"],
+                    "energy_db": round(sg["energy"], 1),
+                    "start_s": round(sg["start"] * bar_len / sr, 2)})
+    return {"bpm": round(float(bpm), 2), "bars": nbars, "form": "".join(labels),
+            "sections": out, "novelty": [round(float(x), 2) for x in nov]}

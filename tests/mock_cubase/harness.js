@@ -128,6 +128,8 @@ page.mOnActivate(dev, mapping)
 const host = page.mHostAccess
 const bankZone = host.mMixConsole.makeMixerBankZone('MCP Bank')
 ;(bankZone.__channels || []).forEach((c, i) => { if (i < names.length && c.mOnTitleChange) c.mOnTitleChange(dev, mapping, names[i]) })
+const ioZone = host.mMixConsole.makeMixerBankZone('MCP IO')
+;(ioZone.__channels || []).forEach((c, i) => { if (i === 0 && c.mOnTitleChange) c.mOnTitleChange(dev, mapping, 'Stereo Out') })
 const sel = host.mTrackSelection.mMixerChannel
 sel.mOnTitleChange && sel.mOnTitleChange(dev, mapping, 'Drums')
 tdRef.mOnChangeTempoBPM && tdRef.mOnChangeTempoBPM(dev, mapping, 120)

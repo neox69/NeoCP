@@ -1,5 +1,7 @@
 # Cubase MCP
 
+> 📘 **Guía completa de configuración (Cubase, puertos MIDI, grabación de notas y escucha con BlackHole, VoiceMeeter o loopback): [docs/CONFIGURAR_CUBASE.md](docs/CONFIGURAR_CUBASE.md)**
+
 Servidor **MCP (Model Context Protocol)** para **Steinberg Cubase / Nuendo 13+** que permite a Claude (o cualquier cliente MCP) **ver y controlar el proyecto en tiempo real**: transporte, tempo, localizadores, mezclador completo, channel strip, inserciones y parámetros de plug-ins, más de 1400 comandos de Cubase, generación musical y escritura de notas en pistas.
 
 Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-mcp](https://github.com/hedidjs/cubase-mcp), que solo envía CC MIDI en un sentido a través de un *Generic Remote*, y [ahujasid/ableton-mcp](https://github.com/ahujasid/ableton-mcp), que es la referencia. La idea era rediseñar el de Cubase hasta igualar o superar al de Ableton.
@@ -24,7 +26,10 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Medidores VU, Control Room | ✗ | ✗ | **✓** |
 | **Escuchar el audio** | ✗ | ✗ | **✓ LUFS, true peak, espectro, resonancias, tonalidad, acordes, tempo, estéreo y consejos de mezcla** |
 | Tararear → notas en una pista | ✗ | ✗ | **✓** |
-| Herramientas MCP | 13 | ~20 | **65, más recursos y prompts** |
+| Ver el sonido (espectrograma) | ✗ | ✗ | **✓ imagen con rejilla de compases** |
+| Estructura de la canción | ✗ | ✗ | **✓ intro/estrofa/estribillo/puente, con marcadores en el proyecto** |
+| Mezcla en bucle cerrado | ✗ | ✗ | **✓ escucha → ajusta faders/EQ → vuelve a escuchar** |
+| Herramientas MCP | 13 | ~20 | **71, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -99,7 +104,7 @@ claude mcp add cubase -- cubase-mcp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (65)
+## Herramientas (71)
 
 **Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
 
@@ -118,6 +123,8 @@ Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 **Música**: `music_theory`, `generate_chord_progression`, `generate_drum_pattern`, `generate_bassline`, `generate_arpeggio`, `generate_melody`, `transform_notes`, `export_midi_file`, `play_notes`, `stop_notes`, `record_notes_to_track`, `create_song_sketch`
 
 **Escuchar**: `listen_to_cubase`, `listen_to_meters`, `listen`, `list_audio_inputs`, `analyze_audio_file`, `compare_to_reference`, `transcribe_audio`
+
+**Ver y mezclar en bucle cerrado**: `show_spectrogram` (devuelve una imagen), `analyze_song_structure` (puede insertar marcadores), `gain_stage_tracks`, `fix_resonances` (detecta una resonancia, la recorta con la EQ y vuelve a escuchar), `match_loudness` (lleva el máster a -14 LUFS u otro objetivo) y `auto_mix_pass` (hace el ciclo completo e informa del antes y el después)
 
 **Avanzado**: `list_controls` y `set_control`, que dan acceso directo a cualquier control del puente
 
