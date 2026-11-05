@@ -31,7 +31,7 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Mezcla en bucle cerrado | ✗ | ✗ | **✓ escucha → ajusta faders/EQ → vuelve a escuchar** |
 | Automatización (curvas, fades, LFO, sidechain, trance gate) | ✗ | ✗ | **✓ volumen, pan, envíos, quick controls, cualquier parámetro de plug-in** |
 | Cargar instrumento o efecto por nombre | ✗ | ✓ | **✓ "pon un Retrologue", "añade una reverb" (Cubase 15)** |
-| Herramientas MCP | 13 | ~20 | **80, más recursos y prompts** |
+| Herramientas MCP | 13 | ~20 | **79, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -53,7 +53,7 @@ Claude ──MCP(stdio)──> neocp (Python)
 
 ### Opción rápida: instalador de doble clic (recomendada)
 
-1. Descarga desde **[Releases](https://github.com/neox69/cubasis_mcp/releases/latest)** el ZIP de tu sistema:
+1. Descarga desde **[Releases](https://github.com/neox69/NeoCP/releases/latest)** el ZIP de tu sistema:
    * `NeoCP-x.y.z-macOS.zip`: descomprímelo y haz doble clic en **Install NeoCP (macOS).command**. Si macOS lo bloquea, haz clic derecho → Abrir.
    * `NeoCP-x.y.z-Windows.zip`: descomprímelo y haz doble clic en **Install NeoCP (Windows).bat**.
 2. El instalador se encarga de todo, sin pedir permisos de administrador ni Python previo:
@@ -88,7 +88,7 @@ uv tool install --python 3.12 neocp-1.0.0-py3-none-any.whl
 También puedes instalar con pip:
 
 ```bash
-pip install git+https://github.com/neox69/cubasis_mcp.git
+pip install git+https://github.com/neox69/NeoCP.git
 ```
 
 Después ejecuta el instalador del script y de la configuración de Claude:
@@ -140,7 +140,7 @@ claude mcp add neocp -- neocp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (80)
+## Herramientas (79)
 
 **Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
 

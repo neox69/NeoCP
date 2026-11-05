@@ -20,7 +20,7 @@ DIST = ROOT / "dist"
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="neox69/cubasis_mcp")
+    ap.add_argument("--repo", default="neox69/NeoCP")
     a = ap.parse_args()
     version = re.search(r'__version__ = "([^"]+)"', (ROOT / "neocp" / "__init__.py").read_text()).group(1)
     wheel = DIST / f"neocp-{version}-py3-none-any.whl"

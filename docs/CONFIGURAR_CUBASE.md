@@ -29,7 +29,7 @@ Esta guía explica, paso a paso, todo lo que hay que preparar en el ordenador y 
 
 ## 1. Instalar NeoCP
 
-**Lo más fácil:** descarga el ZIP de tu sistema desde [Releases](https://github.com/neox69/cubasis_mcp/releases/latest) y haz doble clic en el instalador. Cubre automáticamente los apartados 1, 3 y 4 de esta guía, y en Windows ofrece instalar loopMIDI (apartado 2).
+**Lo más fácil:** descarga el ZIP de tu sistema desde [Releases](https://github.com/neox69/NeoCP/releases/latest) y haz doble clic en el instalador. Cubre automáticamente los apartados 1, 3 y 4 de esta guía, y en Windows ofrece instalar loopMIDI (apartado 2).
 
 **A mano:**
 
@@ -40,7 +40,7 @@ uv tool install --python 3.12 neocp-1.0.0-py3-none-any.whl
 También puedes usar pip:
 
 ```bash
-pip install git+https://github.com/neox69/cubasis_mcp.git
+pip install git+https://github.com/neox69/NeoCP.git
 ```
 
 Se instalan dos comandos: `neocp`, que es el servidor, y `neocp-install`, que instala el script en Cubase, configura Claude y, con `--check`, diagnostica la instalación.
