@@ -46,12 +46,47 @@ def default_destination(app: str = "Cubase") -> Path:  # backwards compatible na
     return script_dir(app)
 
 
+EXTRA_FILE = Path.home() / ".neocp" / "extra_commands.json"
+
+
+def extra_commands() -> List[List[str]]:
+    """User-added key commands (e.g. new Cubase 16 commands) bound in addition to the catalog."""
+    try:
+        return [list(x) for x in json.loads(EXTRA_FILE.read_text(encoding="utf-8"))]
+    except Exception:
+        return []
+
+
+def add_extra_command(category: str, command: str) -> List[List[str]]:
+    cur = extra_commands()
+    if [category, command] not in cur:
+        cur.append([category, command])
+    EXTRA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    EXTRA_FILE.write_text(json.dumps(cur, indent=1, ensure_ascii=False), encoding="utf-8")
+    return cur
+
+
+def render_script() -> str:
+    src = SCRIPT.read_text(encoding="utf-8")
+    extra = "\n".join(f"{c}\t{m}" for c, m in extra_commands())
+    return src.replace('var EXTRA_COMMANDS = ""', "var EXTRA_COMMANDS = " + json.dumps(extra, ensure_ascii=True), 1)
+
+
 def install_script(app: str = "Cubase", dest: Optional[Path] = None) -> Path:
     target_dir = dest or script_dir(app)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / SCRIPT.name
-    shutil.copy2(SCRIPT, target)
+    target.write_text(render_script(), encoding="utf-8")
     return target
+
+
+def reinstall_everywhere() -> List[str]:
+    """Re-install the script for every host that already has it (or the detected ones)."""
+    done = []
+    for app in APPS:
+        if (script_dir(app) / SCRIPT.name).exists() or app in detected_apps():
+            done.append(str(install_script(app)))
+    return done
 
 
 install = install_script
@@ -181,6 +216,9 @@ def main(argv=None) -> int:
     ap.add_argument("--no-claude", action="store_true", help="do not touch Claude Desktop / Claude Code config")
     ap.add_argument("--listen-device", help="audio input used for listening (e.g. 'BlackHole 2ch')")
     ap.add_argument("--check", action="store_true", help="diagnose the installation")
+    ap.add_argument("--add-command", metavar="CATEGORY/COMMAND",
+                    help="bind an extra Cubase key command (e.g. a new Cubase 16 command) and reinstall the script")
+    ap.add_argument("--selftest", action="store_true", help="test every feature against the running Cubase")
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--print", action="store_true", help="only print the bundled script path")
     a = ap.parse_args(argv)
@@ -189,8 +227,25 @@ def main(argv=None) -> int:
         return 0
     if a.check:
         return check()
+    if a.add_command:
+        cat, sep, cmd = a.add_command.partition("/")
+        if not sep:
+            ap.error("--add-command needs CATEGORY/COMMAND, e.g. 'Audio/Stem Separation'")
+        add_extra_command(cat.strip(), cmd.strip())
+        for t in reinstall_everywhere():
+            print(f"✓ reinstalled {t}")
+        print("Now press 'Reload Scripts' in Cubase's MIDI Remote tab.")
+        return 0
     if a.uninstall:
         return uninstall()
+    if a.selftest:
+        from .server import run_selftest
+        rep = json.loads(run_selftest())
+        print(f"NeoCP selftest: {rep['summary']}\n")
+        for r in rep["results"]:
+            mark = {"ok": "✓", "skip": "-", "FAIL": "✗"}[r["status"]]
+            print(f" {mark} {r['test']}: {r['detail']}" + (f"\n     fix: {r['fix']}" if r.get("fix") else ""))
+        return 0 if rep["summary"] == "all good" else 1
     print(f"NeoCP {__version__} — AI co-producer for Cubase\n")
     apps = [a.app] if a.app else detected_apps()
     for app in apps:

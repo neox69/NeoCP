@@ -26,7 +26,7 @@ var PROTOCOL_VERSION = 1
 // ---- configuration ----------------------------------------------------------
 var CFG = {
     BANK_SIZE: 32,          // mixer bank channels mirrored at once
-    SEND_SLOTS: 8,
+    SEND_SLOTS: 8,          // raised to the host's count below (Cubase 16 Pro: 16)
     INSERT_SLOTS: 16,
     QUICK_CONTROLS: 8,
     INSTRUMENT_PARAMS: 16,  // parameter bank values for the selected instrument
@@ -40,6 +40,15 @@ var CFG = {
         'Score Align Elements': 1, 'ADM Editor': 1, 'Game Audio Connect': 1,
         'VRPlayerRemote': 1, 'HeadTracking': 1
     }
+}
+
+// Cubase 16 Pro has 16 sends per channel: follow the host (capped to keep the script light)
+try {
+    var hostSends = midiremote_api_v1_defaults_sends()
+    if (hostSends > CFG.SEND_SLOTS) CFG.SEND_SLOTS = Math.min(16, hostSends)
+} catch (e) { }
+function midiremote_api_v1_defaults_sends() {
+    return require('midiremote_api_v1').mDefaults.getNumberOfSendSlots()
 }
 
 var PORT_IN_NAME = 'NeoCP to Cubase'
@@ -264,7 +273,8 @@ function bindChannelBasics(prefix, ch) {
     bindValue(prefix + '.meterpeak', v.mVUMeterPeak, { meter: true })
     bindValue(prefix + '.meterclip', v.mVUMeterClip, { meter: true })
     for (var i = 0; i < CFG.SEND_SLOTS; ++i) {
-        var snd = ch.mSends.getByIndex(i)
+        var snd = null
+        try { snd = ch.mSends.getByIndex(i) } catch (e) { snd = null }
         if (!snd) continue
         trackObject(prefix + '.send' + i, snd)
         bindValue(prefix + '.send' + i + '.on', snd.mOn)
@@ -440,8 +450,9 @@ var bankOffset = 0
 
 // ---- commands -----------------------------------------------------------------------
 var COMMANDS = '__COMMANDS__'
+var EXTRA_COMMANDS = '__EXTRA_COMMANDS__'
 ;(function () {
-    var lines = COMMANDS.split('\n')
+    var lines = COMMANDS.split('\n').concat(EXTRA_COMMANDS ? EXTRA_COMMANDS.split('\n') : [])
     for (var i = 0; i < lines.length; ++i) {
         if (!lines[i]) continue
         var parts = lines[i].split('\t')

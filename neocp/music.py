@@ -511,3 +511,30 @@ def write_midi_file(path: str, tracks: Dict[str, List[Note]], tempo: float = 120
         mid.tracks.append(tr)
     mid.save(path)
     return path
+
+
+def strum(notes: List[Note], amount_beats: float = 0.03, direction: str = "down") -> List[Note]:
+    """Offset the notes of each chord (same start) like a strum: down = low->high, up = high->low,
+    alternate = down/up per chord. Durations shrink so chord ends stay aligned."""
+    by: Dict[float, List[Note]] = {}
+    for n in notes:
+        by.setdefault(n["start"], []).append(n)
+    out: List[Note] = []
+    for k, (st, grp) in enumerate(sorted(by.items())):
+        grp = sorted(grp, key=lambda n: n["pitch"])
+        d = direction if direction != "alternate" else ("down" if k % 2 == 0 else "up")
+        if d == "up":
+            grp = grp[::-1]
+        for i, n in enumerate(grp):
+            off = i * amount_beats
+            out.append({**n, "start": round(st + off, 4), "duration": round(max(0.01, n["duration"] - off), 4)})
+    return sorted(out, key=lambda n: (n["start"], n["pitch"]))
+
+
+def stretch(notes: List[Note], factor: float = 2.0, anchor: Optional[float] = None) -> List[Note]:
+    """Scale timing (starts and lengths) around anchor (default = first note), e.g. 2.0 = half time."""
+    if not notes:
+        return []
+    a = min(n["start"] for n in notes) if anchor is None else anchor
+    return [{**n, "start": round(a + (n["start"] - a) * factor, 4), "duration": round(n["duration"] * factor, 4)}
+            for n in notes]

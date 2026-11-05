@@ -42,6 +42,9 @@ How Cubase thinks (important):
   melody into notes; compare_to_reference compares with a reference track; show_spectrogram lets you SEE it;
   analyze_song_structure finds intro/verse/chorus; gain_stage_tracks, fix_resonances, match_loudness and
   auto_mix_pass close the loop (listen -> adjust -> listen again).
+* transcribe_drums turns drum audio into a GM drum pattern; check_mix_against_genre compares a mix with
+  typical genre ranges; run_selftest diagnoses the setup; bind_new_command exposes any new Cubase 16
+  key command.
 * transcribe_polyphonic turns audio with chords + bass + melody into MIDI parts (and chord names),
   and can record them into tracks.
 * write_automation performs fader/pan/send/plug-in moves in real time (ramps, fades, LFO, sidechain duck,
@@ -107,6 +110,12 @@ def commands() -> List[Dict[str, Any]]:
     global _COMMANDS
     if _COMMANDS is None:
         _COMMANDS = json.loads((DATA / "commands.json").read_text(encoding="utf-8"))
+        try:
+            from .install import extra_commands
+            for cat, cmd in extra_commands():
+                _COMMANDS.append({"group": cat, "label": cmd, "category": cat, "command": cmd, "user_added": True})
+        except Exception:
+            pass
     return _COMMANDS
 
 
@@ -420,6 +429,120 @@ def set_metronome(on: bool, click_level: Optional[float] = None) -> Dict[str, An
     return r
 
 
+# ============================================================ self test
+
+@tool
+def run_selftest(write_tests: bool = True) -> Dict[str, Any]:
+    """Check every NeoCP feature against the running Cubase and report what works on THIS setup:
+    handshake, live events, tracks, tempo, NRPN and SysEx value writes, display strings, commands,
+    DirectAccess, plug-in manager, notes port and audio devices. Write tests are reversible (each value is
+    restored). If NRPN writes fail but SysEx works, the session switches to SysEx automatically."""
+    results: List[Dict[str, Any]] = []
+
+    def rec(name: str, ok: Optional[bool], detail: Any = "", fix: str = "") -> None:
+        results.append({"test": name, "status": "ok" if ok else ("skip" if ok is None else "FAIL"),
+                        "detail": detail, **({"fix": fix} if fix and not ok else {})})
+    try:
+        b = bridge()
+    except CubaseError as e:
+        return {"summary": "cannot reach Cubase", "results": [{"test": "connection", "status": "FAIL", "detail": str(e)}]}
+    info = b.info
+    feats = info.get("features", {})
+    rec("handshake", True, f"script {info.get('script_version')} / server {__version__}, {len(b.keys)} controls")
+    if info.get("script_version") != __version__:
+        rec("script version", False, f"script {info.get('script_version')} != server {__version__}",
+            "run neocp-install and press Reload Scripts in Cubase")
+    rec("host", True, f"{feats.get('app')} {feats.get('app_version')}, sends={feats.get('send_slots')}, "
+                      f"inserts={feats.get('insert_slots')}")
+    rec("idle callbacks", bool(feats.get("idle")), "API 1.1+ idle loop" if feats.get("idle") else "Cubase 12 fallback mode")
+    try:
+        b.request("ping", timeout=2)
+        rec("round trip", True, "ping ok")
+    except CubaseError as e:
+        rec("round trip", False, str(e))
+    b.refresh()
+    tracks = b.bank_channels()
+    rec("tracks mirrored", bool(tracks), f"{len(tracks)} tracks" if tracks else "no tracks",
+        "open a project with at least one track")
+    tempo = b.transport.get("tempo")
+    rec("tempo read", tempo is not None, tempo)
+    rec("cursor read", b.transport.get("cursor") is not None, b.transport.get("cursor"),
+        "the transport position callback did not fire: move the cursor once in Cubase")
+    sel = (b.objects.get("sel") or {}).get("title")
+    rec("selected track", bool(sel), sel or "none", "select a track in Cubase")
+    if write_tests:
+        if tempo:
+            try:
+                b.request("tempo", bpm=float(tempo) + 1)
+                okt = b.wait_for(lambda: abs((b.transport.get("tempo") or 0) - (float(tempo) + 1)) < 0.01, 1.5)
+                b.request("tempo", bpm=float(tempo))
+                rec("tempo write", okt, "set +1 BPM and restored")
+            except CubaseError as e:
+                rec("tempo write", False, str(e))
+        key = f"ch{tracks[0]['bank_slot']}.pan" if tracks else None
+        if key:
+            orig = b.value(key) if b.value(key) is not None else 0.5
+            target = 0.3 if orig > 0.5 else 0.7
+            results_mode = {}
+            for mode in ("nrpn", "sysex"):
+                b.write_mode = mode
+                b.set(key, target)
+                results_mode[mode] = b.wait_for(lambda: b.value(key) is not None and abs(b.value(key) - target) < 0.01, 1.2)
+                b.set(key, orig)
+                b.wait_for(lambda: b.value(key) is not None and abs(b.value(key) - orig) < 0.01, 1.2)
+            rec("value write (NRPN)", results_mode["nrpn"], f"pan of '{tracks[0]['name']}' moved and restored",
+                "NRPN not reaching Cubase: NEOCP_WRITE_MODE=sysex")
+            rec("value write (SysEx)", results_mode["sysex"], "setProcessValue path")
+            b.write_mode = "nrpn" if results_mode["nrpn"] or not results_mode["sysex"] else "sysex"
+            if b.write_mode == "sysex":
+                rec("write mode", True, "switched this session to SysEx writes (set NEOCP_WRITE_MODE=sysex to persist)")
+            disp = b.display(f"ch{tracks[0]['bank_slot']}.volume")
+            rec("display strings", disp is not None, disp, "Cubase did not send display values")
+        met = b.value("transport.metronome")
+        met = 0.0 if met is None else met
+        if True:
+            b.set("transport.metronome", 0.0 if met > 0.5 else 1.0)
+            okm = b.wait_for(lambda: ((b.value("transport.metronome") or 0) > 0.5) != (met > 0.5), 1.0)
+            b.set("transport.metronome", met)
+            rec("transport toggle", okm, "metronome toggled and restored")
+    try:
+        r = b.request("can_perform", category="Edit", command="Undo")
+        rec("commands bound", r.get("bound"), f"{len(b.command_ids)} commands; canPerform={r.get('can_perform')}")
+    except CubaseError as e:
+        rec("commands bound", False, str(e))
+    if feats.get("direct_access"):
+        try:
+            t = b.request("da_tree", root="selected", depth=1, max_nodes=50, timeout=5)
+            rec("DirectAccess", True, f"'{t.get('title')}' with {t.get('children')} child objects")
+        except CubaseError as e:
+            rec("DirectAccess", False, str(e), "select a track; needs Cubase 13.0.50+")
+        try:
+            sl = b.request("da_plugin_slots", root="selected", depth=4, timeout=10)["slots"]
+            rec("plug-in manager", bool(sl), f"{len(sl)} plug-in slots on the selected track",
+                "needs Cubase 15.0.20+ (load_instrument / load_effect)")
+        except CubaseError as e:
+            rec("plug-in manager", None, f"not available: {e}")
+    else:
+        rec("DirectAccess", None, "not available (Cubase < 13.0.50): plug-in parameter tools disabled")
+    d = b.link.describe()
+    rec("notes port", bool(d.get("notes")), d.get("notes") or "missing",
+        "create the 'NeoCP Notes' port (loopMIDI on Windows) for record_notes_to_track / play_notes")
+    try:
+        from . import capture
+        devs = capture.list_input_devices()
+        loop = [x["name"] for x in devs if x["looks_like_loopback"]]
+        rec("audio capture", bool(devs), f"{len(devs)} inputs")
+        rec("loopback for listening", bool(loop) or bool(os.environ.get("NEOCP_LISTEN_DEVICE")),
+            loop or os.environ.get("NEOCP_LISTEN_DEVICE") or "none",
+            "install BlackHole (macOS) / VoiceMeeter or VB-Cable (Windows), see docs section 6; "
+            "listen_to_meters works without it")
+    except Exception as e:
+        rec("audio capture", False, str(e), "install PortAudio / sounddevice")
+    fails = [r["test"] for r in results if r["status"] == "FAIL"]
+    return {"summary": "all good" if not fails else f"{len(fails)} problem(s): {', '.join(fails)}",
+            "write_mode": b.write_mode, "results": results}
+
+
 # ============================================================ track mixer
 
 @tool
@@ -656,10 +779,29 @@ def execute_command(category: str, command: str, times: int = 1) -> Dict[str, An
         hits = _search(command, 1, category) or _search(f"{category} {command}", 1)
         if hits and (hits[0]["category"], hits[0]["command"]) in b.command_ids:
             category, command = hits[0]["category"], hits[0]["command"]
+    if (category, command) not in b.command_ids:
+        return {"error": f"'{category}/{command}' is not bound in the Cubase script.",
+                "fix": "If it is a valid Cubase key command (e.g. new in Cubase 16, see Edit > Key Commands), call "
+                       "bind_new_command with the exact category and command name, then reload scripts in Cubase."}
     for _ in range(max(1, int(times))):
         b.command(category, command)
         time.sleep(0.08)
     return {"executed": f"{category}/{command}", "times": times}
+
+
+@tool
+def bind_new_command(category: str, command: str) -> Dict[str, Any]:
+    """Make any Cubase key command available (e.g. new Cubase 16 functions such as stem separation, Strum,
+    Stretch Selection, Instrument Stacks), using the category and the INTERNAL command name as shown in
+    Edit > Key Commands. Re-installs the MIDI Remote script; then press 'Reload Scripts' in Cubase's MIDI Remote
+    tab and call reconnect."""
+    from .install import add_extra_command, reinstall_everywhere
+    global _COMMANDS
+    lst = add_extra_command(category, command)
+    paths = reinstall_everywhere()
+    _COMMANDS = None
+    return {"bound": f"{category}/{command}", "extra_commands": lst, "script_reinstalled": paths,
+            "next": "In Cubase: MIDI Remote tab > Reload Scripts, then call reconnect."}
 
 
 QUICK = {
@@ -1060,9 +1202,16 @@ def generate_melody(key: str = "C major", bars: int = 4, chords: Optional[List[s
 def transform_notes(notes: List[Dict[str, Any]], transpose: int = 0, shift_beats: float = 0.0,
                     quantize_grid: Optional[float] = None, quantize_strength: float = 1.0,
                     humanize_timing: float = 0.0, humanize_velocity: int = 0,
-                    velocity_scale: float = 1.0, seed: Optional[int] = None) -> Dict[str, Any]:
-    """Transform a note list: transpose, shift, quantize (grid in beats), humanize, scale velocities."""
+                    velocity_scale: float = 1.0, seed: Optional[int] = None, strum_beats: float = 0.0,
+                    strum_direction: str = "down", stretch_factor: float = 1.0) -> Dict[str, Any]:
+    """Transform a note list: transpose, shift, quantize (grid in beats), humanize, scale velocities,
+    strum chords (strum_beats per note, direction down|up|alternate – like Cubase 16 Strum) and stretch
+    timing (stretch_factor 2 = half time, 0.5 = double time – like Cubase 16 Stretch Selection)."""
     n = M.normalize_notes(notes)
+    if stretch_factor and stretch_factor != 1.0:
+        n = M.stretch(n, stretch_factor)
+    if strum_beats:
+        n = M.strum(n, strum_beats, strum_direction)
     if transpose:
         n = M.transpose(n, transpose)
     if shift_beats:
@@ -1514,6 +1663,77 @@ def transcribe_polyphonic(path: Optional[str] = None, start_bar: float = 1.0, ba
         res.pop("notes", None)
         res.pop("parts", None)
     return res
+
+
+# ============================================================ drums & genre references
+
+@tool
+def transcribe_drums(path: Optional[str] = None, start_bar: float = 1.0, bars: Optional[float] = None,
+                     bpm: Optional[float] = None, grid: Optional[float] = 0.25, sensitivity: float = 1.0,
+                     record_to_track: Optional[TrackRef] = None, record_start_bar: Optional[float] = None,
+                     export_midi: bool = True, include_notes: bool = True) -> Dict[str, Any]:
+    """Drum audio -> MIDI (GM map: kick 36, snare 38, closed hat 42, open hat 46). Source: an audio file,
+    LISTEN to `bars` bars of the project, or the last capture. Returns a step grid per instrument, swing
+    estimate, a MIDI file, and can record the pattern into a drum track (Groove Agent, a GM kit...).
+    sensitivity > 1 detects quieter hits. Best on drum loops / drum stems (use Cubase stem separation first)."""
+    from . import drums as DR
+    if path:
+        from . import audio as A
+        data, sr = A.load_file(os.path.expanduser(path), 600)
+        src, offset_bar = path, 1.0
+    else:
+        if bars:
+            listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness"])
+        data, sr, bpm_l, offset_bar, src = _source_audio(None)
+        bpm = bpm or bpm_l
+    if bpm is None and _bridge and _bridge.connected:
+        bpm = _bridge.transport.get("tempo")
+    if bpm is None:
+        from . import audio as A
+        bpm = A.detect_tempo(A.to_float(data).mean(axis=1), sr).get("bpm") or 120.0
+    res = DR.transcribe_drums(data, sr, float(bpm), grid, sensitivity)
+    res["source"] = src
+    if export_midi and res["notes"]:
+        exp = export_midi_file.__wrapped__({"Drums": res["notes"]}, "drums_transcription.mid", float(bpm))
+        res["midi_file"] = exp.get("path") if isinstance(exp, dict) else exp
+    if record_to_track is not None and res["notes"]:
+        r = record_notes_to_track.__wrapped__(record_to_track, res["notes"], record_start_bar or offset_bar)
+        res["recorded"] = r if isinstance(r, dict) else json.loads(r)
+    if not include_notes:
+        res.pop("notes", None)
+    return res
+
+
+@tool
+def check_mix_against_genre(genre: str, path: Optional[str] = None, start_bar: float = 1.0,
+                            bars: Optional[float] = None) -> Dict[str, Any]:
+    """Compare the mix with typical ranges of a genre (loudness, true peak, crest factor, spectral tilt,
+    sub and air share) and get concrete suggestions. genre: edm, house, techno, trap, hiphop, pop, rock,
+    metal, reggaeton, lofi, jazz, acoustic, classical, podcast, streaming. Source: file, LISTEN to `bars`
+    bars, or the last capture."""
+    from . import audio as A
+    from . import genres as G
+    if path:
+        d, sr = A.load_file(os.path.expanduser(path), 600)
+        rep = A.analyze(d, sr, ["loudness", "dynamics", "spectrum"])
+    else:
+        if bars:
+            listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness", "dynamics", "spectrum"])
+        if not _last_listen.get("report"):
+            raise ValueError("give path or bars (listen first)")
+        rep = _last_listen["report"]
+        if "spectrum" not in rep or "dynamics" not in rep:
+            rep = A.analyze(_last_listen["audio"], _last_listen["sr"], ["loudness", "dynamics", "spectrum"])
+    out = G.check(rep, genre)
+    out["genre_loudness_target"] = G.PROFILES[out["genre"]]["lufs"]
+    return out
+
+
+@tool
+def list_genre_profiles() -> Dict[str, Any]:
+    """Approximate mix/master reference ranges per genre used by check_mix_against_genre."""
+    from . import genres as G
+    return G.PROFILES
 
 
 # ============================================================ seeing, structure, auto-mix
@@ -2041,6 +2261,101 @@ def set_automation_mode(mode: str = "touch") -> Dict[str, Any]:
     return {"mode": mode}
 
 
+# ============================================================ end-to-end producer
+
+GENRE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "pop":       {"tempo": 112, "drums": "pop", "bass": "root_fifth", "chords": "pop", "prog_major": ["I", "V", "vi", "IV"], "prog_minor": ["i", "VI", "III", "VII"]},
+    "house":     {"tempo": 124, "drums": "house", "bass": "octave", "chords": "offbeat", "prog_major": ["vi", "IV", "I", "V"], "prog_minor": ["i", "VII", "VI", "VII"]},
+    "techno":    {"tempo": 130, "drums": "techno", "bass": "eighths", "chords": "offbeat", "prog_major": ["I", "bVII", "I", "bVII"], "prog_minor": ["i", "i", "VI", "VII"]},
+    "trap":      {"tempo": 140, "drums": "trap", "bass": "root", "chords": "sustain", "prog_major": ["vi", "IV", "I", "V"], "prog_minor": ["i", "VI", "VII", "v"]},
+    "hiphop":    {"tempo": 90, "drums": "boom_bap", "bass": "syncopated", "chords": "sustain", "prog_major": ["ii7", "V7", "Imaj7", "vi7"], "prog_minor": ["i7", "iv7", "VI", "v7"]},
+    "lofi":      {"tempo": 82, "drums": "boom_bap", "bass": "walking", "chords": "charleston", "prog_major": ["ii7", "V7", "Imaj7", "vi7"], "prog_minor": ["i7", "iv7", "VII", "III"]},
+    "rock":      {"tempo": 120, "drums": "rock", "bass": "eighths", "chords": "eighths", "prog_major": ["I", "IV", "V", "IV"], "prog_minor": ["i", "VII", "VI", "VII"]},
+    "reggaeton": {"tempo": 95, "drums": "reggaeton", "bass": "syncopated", "chords": "offbeat", "prog_major": ["vi", "IV", "I", "V"], "prog_minor": ["i", "VI", "III", "VII"]},
+    "funk":      {"tempo": 105, "drums": "funk", "bass": "syncopated", "chords": "offbeat", "prog_major": ["I7", "IV7", "I7", "V7"], "prog_minor": ["i7", "iv7", "i7", "v7"]},
+    "dnb":       {"tempo": 174, "drums": "dnb", "bass": "root", "chords": "sustain", "prog_major": ["vi", "IV", "I", "V"], "prog_minor": ["i", "VI", "III", "VII"]},
+    "disco":     {"tempo": 118, "drums": "disco", "bass": "octave", "chords": "offbeat", "prog_major": ["ii7", "V7", "Imaj7", "vi7"], "prog_minor": ["i7", "iv7", "VII", "III"]},
+    "afrobeat":  {"tempo": 108, "drums": "afrobeat", "bass": "syncopated", "chords": "offbeat", "prog_major": ["I", "IV", "vi", "V"], "prog_minor": ["i", "iv", "VII", "III"]},
+}
+DEFAULT_INSTRUMENTS = {"drums": "Groove Agent", "bass": "Retrologue", "chords": "HALion Sonic", "melody": "Retrologue"}
+
+
+def produce_song(genre: str = "pop", key: str = "A minor", bars: int = 8, tempo: Optional[float] = None,
+                 progression: Optional[List[str]] = None, parts: Optional[List[str]] = None,
+                 tracks: Optional[Dict[str, TrackRef]] = None, instruments: Optional[Dict[str, str]] = None,
+                 create_tracks: bool = True, start_bar: float = 1.0, speed: float = 2.0, seed: Optional[int] = None,
+                 listen_after: bool = True) -> Dict[str, Any]:
+    g = genre.lower()
+    if g not in GENRE_PRESETS:
+        raise ValueError(f"genre must be one of {', '.join(GENRE_PRESETS)}")
+    P = GENRE_PRESETS[g]
+    b = bridge()
+    parts = parts or ["drums", "bass", "chords", "melody"]
+    minor = "min" in key.lower() or key.strip().endswith("m")
+    prog = progression or (P["prog_minor"] if minor else P["prog_major"])
+    bpm = float(tempo or P["tempo"])
+    log: Dict[str, Any] = {"genre": g, "key": key, "tempo": bpm, "progression": prog, "steps": []}
+    set_tempo.__wrapped__(bpm)
+    reps = max(1, int(bars * 4 / (4 * len(prog))))
+    full = list(prog) * reps
+    notes = {
+        "drums": M.drum_pattern(P["drums"], bars, fill=True, seed=seed),
+        "bass": M.bassline(full, key, 4.0, P["bass"], 2, 100, seed),
+        "chords": M.chord_progression(full, key, 4.0, 4, 85, "voice_lead", P["chords"]),
+        "melody": M.melody(key, bars, 5, 0.6, full, 4.0, "arch", 95, seed),
+    }
+    if g in ("lofi", "hiphop"):
+        notes["drums"] = M.drum_pattern(P["drums"], bars, swing=0.25, humanize=0.3, fill=True, seed=seed)
+        notes["chords"] = M.strum(notes["chords"], 0.03, "down")
+    target_tracks: Dict[str, Any] = dict(tracks or {})
+    inst = {**DEFAULT_INSTRUMENTS, **(instruments or {})}
+    for part in parts:
+        if part in target_tracks:
+            continue
+        if not create_tracks:
+            raise ValueError(f"no track given for part '{part}' (set tracks or create_tracks=True)")
+        try:
+            r = create_instrument_track.__wrapped__(inst.get(part, "HALion Sonic"))
+            target_tracks[part] = r.get("new_track")
+            log["steps"].append({"created": part, "track": r.get("new_track"), "instrument": r.get("loaded")})
+        except Exception as e:  # pre-Cubase-15 or dialog cancelled
+            log["steps"].append({"created": part, "error": str(e)})
+    exp = export_midi_file.__wrapped__({k.capitalize(): v for k, v in notes.items() if k in parts},
+                                       f"{g}_{key.replace(' ', '_')}.mid", bpm)
+    log["midi_file"] = exp.get("path") if isinstance(exp, dict) else exp
+    for part in parts:
+        trk = target_tracks.get(part)
+        if not trk:
+            continue
+        r = record_notes_to_track.__wrapped__(trk, notes[part], start_bar, speed)
+        log["steps"].append({"recorded": part, "track": trk, "notes": r.get("recorded_notes") if isinstance(r, dict) else r})
+    set_loop_range.__wrapped__(start_bar, start_bar + bars)
+    if listen_after:
+        try:
+            rep = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=min(bars, 8))
+            from . import genres as G
+            gp = g if g in G.PROFILES else "streaming"
+            log["listen"] = {k: rep.get(k) for k in ("loudness", "key", "suggestions")}
+            if "loudness" in rep:
+                full_rep = rep if "spectrum" in rep else {**rep}
+                log["genre_check"] = G.check(full_rep, gp)
+        except Exception as e:
+            log["listen"] = {"skipped": str(e)}
+    log["next"] = ("Balance with set_track_volume / auto_mix_pass, add FX with load_effect, automation with "
+                   "write_automation, then project_action('save').")
+    return log
+
+
+produce_song.__doc__ = (
+    "Produce a song idea end-to-end in Cubase: set tempo for the genre, (optionally) create instrument tracks and "
+    "load instruments by name (Cubase 15+), generate drums / bass / chords / melody for the key, record each part "
+    "into its track (faster than real time), set the loop and finally LISTEN and check the mix against the genre "
+    "profile. genre: " + ", ".join(GENRE_PRESETS) + ". Use `tracks` to record into existing tracks instead, e.g. "
+    '{"drums": "Drums", "bass": "Bass"}. `instruments` overrides plug-ins per part '
+    "(default Groove Agent / Retrologue / HALion Sonic).")
+produce_song = tool(produce_song)
+
+
 # ============================================================ resources & prompts
 
 @mcp.resource("neocp://commands")
@@ -2066,6 +2381,25 @@ def produce_track(idea: str = "a melancholic synthwave groove at 100 BPM") -> st
             "4. Balance with set_track_volume / set_track_pan, add EQ with set_eq_band, sends with set_send.\n"
             "5. listen_to_cubase (or listen_to_meters if no loopback device) to HEAR the result: fix level, EQ and "
             "balance problems it reports, listen again, then project_action('save').")
+
+
+@mcp.prompt()
+def mix_check(genre: str = "pop") -> str:
+    """Listen to the project and fix the mix for a genre."""
+    return (f"Check and improve my mix for {genre}:\n"
+            "1. run_selftest if anything fails; get_session_info.\n"
+            "2. listen_to_cubase over the chorus (ask me the bars if unknown, or analyze_song_structure first).\n"
+            f"3. check_mix_against_genre('{genre}') and show_spectrogram; explain the 3 biggest problems.\n"
+            "4. Fix them step by step (gain_stage_tracks, fix_resonances, set_eq_band, set_send, match_loudness), "
+            "listening again after each change, and report before/after numbers.")
+
+
+@mcp.prompt()
+def transcribe_reference(path: str = "~/Music/reference.wav") -> str:
+    """Turn a reference song into MIDI parts in Cubase."""
+    return (f"Transcribe {path}: analyze_audio_file for key/tempo, analyze_song_structure, then transcribe_drums "
+            "(drums) and transcribe_polyphonic (bass/chords/melody). Ask me which tracks to record into, set the "
+            "project tempo to the detected one and record the parts with record_notes_to_track.")
 
 
 def main() -> None:

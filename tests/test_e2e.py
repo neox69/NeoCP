@@ -114,3 +114,34 @@ def test_hardcoded_commands_exist():
     used += re.findall(r'\("([A-Z][\w &]+)", "([^"]+)"\)', src)
     missing = sorted({u for u in used if u not in known and not u[0].startswith("NEOCP_")})
     assert not missing, missing
+
+
+def test_selftest(mock_bridge):
+    r = call(S.run_selftest)
+    st = {x["test"]: x["status"] for x in r["results"]}
+    for k in ("handshake", "tracks mirrored", "tempo write", "value write (NRPN)", "value write (SysEx)",
+              "commands bound", "DirectAccess", "plug-in manager", "transport toggle"):
+        assert st[k] == "ok", (k, r)
+    assert r["write_mode"] == "nrpn"
+
+
+def test_bind_new_command(mock_bridge, tmp_path, monkeypatch):
+    from neocp import install as I
+    monkeypatch.setattr(I, "EXTRA_FILE", tmp_path / "extra.json")
+    monkeypatch.setattr(I, "documents_dir", lambda: tmp_path)
+    r = call(S.bind_new_command, "Audio", "Stem Separation")
+    assert r["bound"] == "Audio/Stem Separation" and r["script_reinstalled"]
+    js = open(r["script_reinstalled"][0], encoding="utf-8").read()
+    assert 'var EXTRA_COMMANDS = "Audio\\tStem Separation"' in js
+    assert any(c.get("user_added") for c in S.commands())
+    S._COMMANDS = None
+
+
+def test_produce_song_existing_tracks(mock_bridge, tmp_path, monkeypatch):
+    monkeypatch.setenv("NEOCP_EXPORT_DIR", str(tmp_path))
+    r = call(S.produce_song, "lofi", "D minor", bars=4,
+             tracks={"drums": "Drums", "bass": "Bass", "chords": "Keys"}, parts=["drums", "bass", "chords"],
+             create_tracks=False, speed=4.0, listen_after=False)
+    assert r["tempo"] == 82.0 and r["midi_file"].endswith(".mid")
+    rec = [s for s in r["steps"] if "recorded" in s]
+    assert [s["recorded"] for s in rec] == ["drums", "bass", "chords"] and all(s["notes"] > 0 for s in rec)

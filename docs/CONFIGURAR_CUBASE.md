@@ -190,7 +190,27 @@ En Windows, Cubase usa ASIO, que suele tener la tarjeta en exclusiva. Hay tres o
 ### Nivel 5: el micrófono (tararear → notas)
 `transcribe_audio` usa la entrada predeterminada del sistema o la que indiques con `device`. En macOS, la primera vez el sistema pide permiso de micrófono para la aplicación que lanza el servidor (Claude o Terminal). Para obtener notas precisas, canta o toca **una sola voz**, con el metrónomo de Cubase sonando.
 
-## 7. Comprobación rápida
+## 7. Comprobación rápida (autotest)
+
+La forma más rápida de comprobarlo todo es ejecutar:
+
+```bash
+neocp-install --selftest
+```
+
+También puedes pedírselo a Claude (*"haz el autotest de NeoCP"*). El autotest comprueba en tu Cubase:
+* la conexión;
+* que llegan los eventos;
+* las pistas y el tempo (lo lee y lo escribe, y luego lo restaura);
+* la escritura de valores por NRPN y por SysEx (mueve un panorama y lo devuelve a su sitio);
+* las cadenas de texto de pantalla;
+* los comandos;
+* DirectAccess y el gestor de plug-ins;
+* el puerto de notas y los dispositivos de audio.
+
+Para cada fallo te dice cómo arreglarlo. Si en tu equipo no funciona el NRPN pero sí el SysEx, pasa solo a SysEx durante la sesión; para que sea permanente, pon `NEOCP_WRITE_MODE=sysex`.
+
+Si prefieres probar a mano:
 
 Pide a Claude, en orden:
 1. *"Estado de la conexión con Cubase"* (`connection_status`): debe indicar el script, el número de controles y si DirectAccess está disponible.
@@ -222,6 +242,21 @@ Pide a Claude, en orden:
 | `load_plugin` falla | Cubase anterior a 15.0.20 | Carga el plug-in a mano; los parámetros sí son accesibles desde 13.0.50 |
 | Faltan pistas en la lista | El proyecto tiene más de 32 canales | Usa `list_tracks(page=1)` o `bank('next')` |
 | Los volúmenes en dB no son exactos | Se usa la curva del fader | El servidor ajusta iterativamente; la tolerancia es de 0,1 dB |
+
+## 9b. Cubase 16: comandos nuevos
+
+El catálogo de comandos incluido es el de Cubase 13–15. Para usar un comando nuevo de Cubase 16, como la separación en stems, Strum, Stretch Selection o Instrument Stacks:
+1. Busca su categoría y su nombre exacto en *Edit → Key Commands*.
+2. Ejecuta:
+
+   ```bash
+   neocp-install --add-command "Categoría/Comando"
+   ```
+
+   O pide a Claude: `bind_new_command`.
+3. Pulsa *Reload Scripts* en la pestaña MIDI Remote y pide a Claude `reconnect`.
+
+Los comandos añadidos se guardan en `~/.neocp/extra_commands.json` y se mantienen en las siguientes instalaciones.
 
 ## 10. Qué no se puede hacer (límites de la API de Steinberg)
 

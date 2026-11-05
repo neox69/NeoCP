@@ -26,13 +26,17 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Medidores VU, Control Room | ✗ | ✗ | **✓** |
 | **Escuchar el audio** | ✗ | ✗ | **✓ LUFS, true peak, espectro, resonancias, tonalidad, acordes, tempo, estéreo y consejos de mezcla** |
 | Tararear → notas en una pista | ✗ | ✗ | **✓** |
+| **Batería a MIDI** (bombo, caja, charles) | ✗ | ✗ | **✓ con rejilla y swing, y lo graba en tu pista de batería** |
+| Perfiles de mezcla por género | ✗ | ✗ | **✓ 15 géneros** |
+| Producir una canción de principio a fin | ✗ | ✗ | **✓ `produce_song`** |
+| Autotest de tu instalación | ✗ | ✗ | **✓ `run_selftest`** |
 | **Transcripción polifónica** (audio → MIDI de acordes, bajo y melodía) | ✗ | ✗ | **✓ con nombres de acordes, y lo graba en tus pistas** |
 | Ver el sonido (espectrograma) | ✗ | ✗ | **✓ imagen con rejilla de compases** |
 | Estructura de la canción | ✗ | ✗ | **✓ intro/estrofa/estribillo/puente, con marcadores en el proyecto** |
 | Mezcla en bucle cerrado | ✗ | ✗ | **✓ escucha → ajusta faders/EQ → vuelve a escuchar** |
 | Automatización (curvas, fades, LFO, sidechain, trance gate) | ✗ | ✗ | **✓ volumen, pan, envíos, quick controls, cualquier parámetro de plug-in** |
 | Cargar instrumento o efecto por nombre | ✗ | ✓ | **✓ "pon un Retrologue", "añade una reverb" (Cubase 15)** |
-| Herramientas MCP | 13 | ~20 | **80, más recursos y prompts** |
+| Herramientas MCP | 13 | ~20 | **86, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -141,7 +145,7 @@ claude mcp add neocp -- neocp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (80)
+## Herramientas (86)
 
 **Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
 
@@ -168,6 +172,10 @@ Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 **Instrumentos y efectos por nombre** (Cubase 15+): `load_instrument`, `load_effect`, `create_instrument_track`, `search_plugins`, `list_plugin_slots`
 
 **Transcripción polifónica**: `transcribe_polyphonic` pasa a MIDI un audio con acordes, bajo y melodía a la vez. Separa las partes, nombra los acordes por compás, exporta un `.mid` por partes y puede grabarlas directamente en tus pistas.
+
+**Producción y referencia**: `produce_song` (tempo del género → pistas e instrumentos → batería, bajo, acordes y melodía grabados → loop → escucha y chequeo del género), `transcribe_drums`, `check_mix_against_genre`, `list_genre_profiles`. `transform_notes` añade *strum* y *stretch* al estilo Cubase 16.
+
+**Diagnóstico y Cubase 16**: `run_selftest` comprueba cada función en tu Cubase y deshace los cambios que hace. `bind_new_command` añade cualquier comando nuevo (Cubase 16 o posteriores) sin esperar a una release.
 
 **Avanzado**: `list_controls` y `set_control`, que dan acceso directo a cualquier control del puente
 
@@ -245,6 +253,19 @@ Requisitos: **precount desactivado** y la entrada de la pista en *All MIDI Input
 | `NEOCP_PORT_TO_CUBASE` / `_FROM_CUBASE` / `_NOTES` | nombres de arriba | nombres de los puertos |
 | `NEOCP_RECORD_LATENCY_MS` | `0` | compensa la latencia al grabar notas |
 | `NEOCP_EXPORT_DIR` | `~/Documents/NeoCP` | carpeta donde se exportan los `.mid` |
+
+## Cubase 16
+
+NeoCP funciona con **Cubase 16** (publicado el 4 de noviembre de 2026). Cubase 16 sigue usando la MIDI Remote API 1.3, así que todo lo de Cubase 15 sigue disponible. Además:
+* **16 envíos por canal en Pro**: el script detecta cuántos tiene el host y los refleja todos (`set_send` de 0 a 15).
+* **Comandos nuevos** de Cubase 16, como la separación en 6 stems, Strum, Stretch Selection o Instrument Stacks. Primero busca el nombre exacto en *Edit → Key Commands*. Después pide a Claude `bind_new_command("<categoría>", "<comando>")`, o desde el terminal:
+
+  ```bash
+  neocp-install --add-command "<Categoría>/<Comando>"
+  ```
+
+  Por último pulsa *Reload Scripts* en Cubase.
+* `transform_notes` incluye `strum_beats` y `stretch_factor` para generar notas con el mismo efecto antes de grabarlas.
 
 ## Compatibilidad
 

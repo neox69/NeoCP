@@ -32,6 +32,7 @@ def main() -> None:
     src = TEMPLATE.read_text(encoding="utf-8")
     src = src.replace("'__COMMANDS__'", js_string("\n".join(lines)))
     src = src.replace("'__VERSION__'", js_string(version))
+    src = src.replace("'__EXTRA_COMMANDS__'", '""')  # filled at install time (neocp-install --add-command)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(src, encoding="utf-8")
     print(f"wrote {OUT.relative_to(ROOT)} ({len(lines)} commands, v{version})")
