@@ -9,6 +9,10 @@ Claude (or any MCP client) can now see, control and **listen to** Steinberg Cuba
 
 The installer needs no admin rights and no pre-installed Python. Full guide (Spanish): `docs/CONFIGURAR_CUBASE.md`, inside the ZIP.
 
+## New in 1.3.3 (important fix)
+* **Fix: every tool failed with "Error executing tool …"** with recent `mcp` versions (≥ 1.10, including 2.x). Tools return JSON text, but the SDK built an output schema from the `-> dict` annotations and rejected the result. Structured output is now disabled for NeoCP tools, with a fallback for older SDKs. Thanks for the detailed report.
+* New tests call tools through the MCP server itself (as Claude does), and CI runs against both mcp 1.x and 2.x.
+
 ## New in 1.3.2
 * Track names fall back to the object title sent with each channel's volume value, for hosts where channel title callbacks are not delivered. The self test now says whether the bank is empty or names are missing.
 

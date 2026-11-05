@@ -109,7 +109,13 @@ def tool(fn):
             return _ok({"error": str(e)})
         except (ValueError, KeyError, TypeError, IndexError) as e:
             return _ok({"error": f"{type(e).__name__}: {e}"})
-    return mcp.tool()(wrapper)
+    # Tools return JSON text (or Image content). Disable structured output: newer mcp versions (>= 1.10)
+    # would otherwise build an output schema from the wrapped function's "-> Dict" annotation and reject
+    # the string result ("Error executing tool ...").
+    try:
+        return mcp.tool(structured_output=False)(wrapper)
+    except TypeError:  # mcp < 1.10 has no structured_output parameter
+        return mcp.tool()(wrapper)
 
 
 def commands() -> List[Dict[str, Any]]:
