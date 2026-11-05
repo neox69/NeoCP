@@ -36,7 +36,7 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Mezcla en bucle cerrado | ✗ | ✗ | **✓ escucha → ajusta faders/EQ → vuelve a escuchar** |
 | Automatización (curvas, fades, LFO, sidechain, trance gate) | ✗ | ✗ | **✓ volumen, pan, envíos, quick controls, cualquier parámetro de plug-in** |
 | Cargar instrumento o efecto por nombre | ✗ | ✓ | **✓ "pon un Retrologue", "añade una reverb" (Cubase 15)** |
-| Herramientas MCP | 13 | ~20 | **86, más recursos y prompts** |
+| Herramientas MCP | 13 | ~20 | **87, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -145,9 +145,9 @@ claude mcp add neocp -- neocp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (86)
+## Herramientas (87)
 
-**Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
+**Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `review_project` (revisión instantánea: solos olvidados, pistas armadas, faders altos o sin equilibrar, todo al centro, sin envíos…), `list_tracks`, `get_track_info`, `get_selected_track_info`
 
 **Transporte**: `transport` (play, stop, record, ir a inicio/fin/localizadores/marcadores...), `get_transport_state`, `set_tempo`, `set_position`, `set_loop_range`, `set_cycle`, `set_metronome`
 

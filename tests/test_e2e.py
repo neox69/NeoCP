@@ -159,3 +159,11 @@ def test_parsing_and_positions():
     assert S._position_string(B, 1, beat=4.9999, beats_per_bar=4) == "2.1.1.0"
     assert S._position_string(B, 3.5, beats_per_bar=4) == "3.3.1.0"
     assert S._position_string(B, 2, beats_per_bar=3) == "2.1.1.0"
+
+
+def test_review_project(mock_bridge):
+    call(S.set_track_state, "Keys", solo=True, record_arm=True)
+    r = call(S.review_project)
+    levels = [f["level"] for f in r["findings"]]
+    assert r["tracks"] == 3 and levels[0] == "high"
+    assert any("Solo" in f["finding"] for f in r["findings"]) and any("armed" in f["finding"] for f in r["findings"])

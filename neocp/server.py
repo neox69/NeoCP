@@ -312,6 +312,53 @@ def get_selected_track_info(include_parameters: bool = True) -> Dict[str, Any]:
     return d
 
 
+@tool
+def review_project() -> Dict[str, Any]:
+    """Instant project review from the live mirror (no audio needed): forgotten solos/mutes, armed tracks,
+    hot or untouched faders, everything panned centre, unused sends, tempo left at default, empty tracks.
+    Returns prioritised findings with the tool to fix each one."""
+    b = bridge()
+    b.refresh()
+    tr = b.bank_channels()
+    find: List[Dict[str, Any]] = []
+
+    def add(level: str, msg: str, fix: str) -> None:
+        find.append({"level": level, "finding": msg, "fix": fix})
+    solos = [c["name"] for c in tr if _flag(b, f"ch{c['bank_slot']}.solo")]
+    mutes = [c["name"] for c in tr if _flag(b, f"ch{c['bank_slot']}.mute")]
+    armed = [c["name"] for c in tr if _flag(b, f"ch{c['bank_slot']}.rec")]
+    vols = {c["name"]: _fader_db(b, f"ch{c['bank_slot']}.volume") for c in tr}
+    pans = {c["name"]: b.value(f"ch{c['bank_slot']}.pan") for c in tr}
+    if solos:
+        add("high", f"Solo active on {solos}: the rest of the mix is silent.", "project_action('unsolo_all')")
+    if armed:
+        add("medium", f"Record-armed tracks {armed}: pressing record will overwrite takes.", "set_track_state(track, record_arm=False)")
+    if mutes:
+        add("info", f"Muted tracks {mutes}.", "set_track_state(track, mute=False) if not intended")
+    hot = [n for n, v in vols.items() if v is not None and v > 3]
+    if hot:
+        add("medium", f"Faders above +3 dB on {hot}: gain-stage at the source instead.", "gain_stage_tracks()")
+    known = [v for v in vols.values() if v is not None and v != float("-inf")]
+    if len(known) >= 3 and max(known) - min(known) < 0.5:
+        add("medium", "All faders at the same level: the mix is not balanced yet.", "gain_stage_tracks() then set_track_volume")
+    pv = [v for v in pans.values() if v is not None]
+    if len(pv) >= 4 and all(abs(v - 0.5) < 0.01 for v in pv):
+        add("low", "Every track is panned centre: no stereo width.", "set_track_pan on guitars/keys/percussion")
+    sends_used = sum(1 for c in tr for i in range(int(b.info.get("send_slots", 8)))
+                     if _flag(b, f"ch{c['bank_slot']}.send{i}.on"))
+    if tr and not sends_used:
+        add("low", "No sends active: no shared reverb/delay space.", "create_track('fx') + load_effect('REVerence') + set_send")
+    tempo = b.transport.get("tempo")
+    if tempo is not None and abs(tempo - 120) < 0.01:
+        add("info", "Tempo is still the default 120 BPM.", "set_tempo(bpm)")
+    if not tr:
+        add("high", "No tracks found in the mirrored bank.", "create_track / produce_song")
+    order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+    find.sort(key=lambda f: order[f["level"]])
+    return {"tracks": len(tr), "tempo": tempo, "findings": find or [{"level": "info", "finding": "Nothing obvious to fix.",
+                                                                       "fix": "listen_to_cubase for an audio check"}]}
+
+
 # ============================================================ transport
 
 @tool
