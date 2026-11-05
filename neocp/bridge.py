@@ -117,6 +117,13 @@ class CubaseBridge:
             raise CubaseError(resp.get("error", "unknown error"))
         return resp.get("result")
 
+    def send_nowait(self, op: str, **params: Any) -> None:
+        """Fire-and-forget request (no response unless it fails) – used for fast streams."""
+        mid = next(self._ids) & 0x3FFF or 1
+        payload = {"op": op, "nr": 1, **{k: v for k, v in params.items() if v is not None}}
+        for msg in P.encode(P.TYPE_REQUEST, mid, payload):
+            self.link.send_sysex(msg)
+
     # ------------------------------------------------------------ handshake
     def connect(self, timeout: float = 4.0) -> Dict[str, Any]:
         info = self.request("hello", timeout=timeout)

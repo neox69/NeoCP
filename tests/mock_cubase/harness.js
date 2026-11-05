@@ -7,7 +7,8 @@ const scriptPath = process.argv[2]
 const log = (...a) => process.stderr.write(a.join(' ') + '\n')
 
 const names = ['Drums', 'Bass', 'Keys']
-const executed = []           // commands executed
+const executed = []
+const daWrites = []           // commands executed
 const actionsTriggered = []
 let tempo = 120
 const valueBindings = []      // {cv, hv}
@@ -73,7 +74,9 @@ function assigned_td() { return tdRef }
 
 function makeDA() {
   const params = { 10: { t: 'Threshold', v: 0.5 }, 11: { t: 'Ratio', v: 0.25 } }
-  const nodes = { 1: { t: 'Kick', type: 'MixerChannel', kids: [2, 3] }, 2: { t: 'Compressor', type: 'InsertSlot', kids: [], params: [10, 11] }, 3: { t: 'EQ', type: 'ChannelEQ', kids: [] } }
+  const nodes = { 1: { t: 'Kick', type: 'MixerChannel', kids: [2, 3, 4] }, 2: { t: 'Compressor', type: 'InsertSlot', kids: [], params: [10, 11], slot: 'fx' }, 3: { t: 'EQ', type: 'ChannelEQ', kids: [] }, 4: { t: '', type: 'InstrumentSlot', kids: [], slot: 'inst' } }
+  const fx = [{ mPluginName: 'REVerence', mPluginUID: 'ABC123', mPluginVendor: 'Steinberg', mSubCategories: 'Fx|Reverb' }, { mPluginName: 'Compressor', mPluginUID: 'CMP1', mPluginVendor: 'Steinberg', mSubCategories: 'Fx|Dynamics' }]
+  const inst = [{ mPluginName: 'HALion Sonic', mPluginUID: 'HS7', mPluginVendor: 'Steinberg', mSubCategories: 'Instrument|Synth|Sampler' }, { mPluginName: 'Retrologue', mPluginUID: 'RETRO2', mPluginVendor: 'Steinberg', mSubCategories: 'Instrument|Synth' }]
   return {
     activate() {}, deactivate() {},
     getBaseObjectID: () => 1,
@@ -85,14 +88,14 @@ function makeDA() {
     getParameterTagByIndex: (m, id, i) => nodes[id].params[i],
     getParameterTitle: (m, id, tag) => params[tag].t,
     getParameterProcessValue: (m, id, tag) => params[tag].v,
-    setParameterProcessValue: (m, id, tag, v) => { params[tag].v = v },
+    setParameterProcessValue: (m, id, tag, v) => { params[tag].v = v; daWrites.push([id, tag, v]) },
     setParameterDisplayValue: (m, id, tag, s) => { params[tag].v = parseFloat(s) / 100 },
     getParameterDisplayValue: (m, id, tag) => (params[tag].v * 100).toFixed(1),
     getParameterDisplayUnits: () => 'dB', getParameterDefaultProcessValue: () => 0.5,
     mPluginManager: {
-      getNumberOfPluginCollections: () => 1, getIndexOfDefaultPluginCollection: () => 0, getIndexOfActivePluginCollection: () => 0,
-      getPluginCollectionByIndex: () => ({ mName: 'All', mEntries: [{ mPluginName: 'REVerence', mPluginUID: 'ABC123', mPluginVendor: 'Steinberg' }] }),
-      trySetSlotPlugin: (m, id, uid) => { executed.push('load:' + uid); return true }, resetSlotPlugin: () => {},
+      getNumberOfPluginCollections: (m, id) => (nodes[id] && nodes[id].slot ? 1 : 0), getIndexOfDefaultPluginCollection: () => 0, getIndexOfActivePluginCollection: () => 0,
+      getPluginCollectionByIndex: (m, id) => ({ mName: 'All', mEntries: nodes[id].slot === 'inst' ? inst : fx }),
+      trySetSlotPlugin: (m, id, uid) => { executed.push('load:' + id + ':' + uid); nodes[id].t = uid; return true }, resetSlotPlugin: () => {},
     },
   }
 }
@@ -150,6 +153,6 @@ rl.on('line', line => {
       if (cv) cv.setProcessValue(dev, ((st.dmsb << 7) | v) / 16383)
     }
   } else if (parts[0] === 'q') {
-    out('info ' + JSON.stringify({ executed, actionsTriggered, tempo }))
+    out('info ' + JSON.stringify({ executed, actionsTriggered, tempo, daWrites: daWrites.length }))
   }
 })

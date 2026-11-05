@@ -29,7 +29,9 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Ver el sonido (espectrograma) | ✗ | ✗ | **✓ imagen con rejilla de compases** |
 | Estructura de la canción | ✗ | ✗ | **✓ intro/estrofa/estribillo/puente, con marcadores en el proyecto** |
 | Mezcla en bucle cerrado | ✗ | ✗ | **✓ escucha → ajusta faders/EQ → vuelve a escuchar** |
-| Herramientas MCP | 13 | ~20 | **71, más recursos y prompts** |
+| Automatización (curvas, fades, LFO, sidechain, trance gate) | ✗ | ✗ | **✓ volumen, pan, envíos, quick controls, cualquier parámetro de plug-in** |
+| Cargar instrumento o efecto por nombre | ✗ | ✓ | **✓ "pon un Retrologue", "añade una reverb" (Cubase 15)** |
+| Herramientas MCP | 13 | ~20 | **80, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -138,7 +140,7 @@ claude mcp add neocp -- neocp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (71)
+## Herramientas (80)
 
 **Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
 
@@ -160,9 +162,25 @@ Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
 **Ver y mezclar en bucle cerrado**: `show_spectrogram` (devuelve una imagen), `analyze_song_structure` (puede insertar marcadores), `gain_stage_tracks`, `fix_resonances` (detecta una resonancia, la recorta con la EQ y vuelve a escuchar), `match_loudness` (lleva el máster a -14 LUFS u otro objetivo) y `auto_mix_pass` (hace el ciclo completo e informa del antes y el después)
 
+**Automatización**: `write_automation` (rampas, fade in/out, LFO, *duck* tipo sidechain, *swell*, *trance gate* por pasos o puntos por compás, sobre volumen, pan, mute, envíos, quick controls, parámetros del instrumento o de cualquier plug-in), `clear_automation`, `set_automation_mode`
+
+**Instrumentos y efectos por nombre** (Cubase 15+): `load_instrument`, `load_effect`, `create_instrument_track`, `search_plugins`, `list_plugin_slots`
+
 **Avanzado**: `list_controls` y `set_control`, que dan acceso directo a cualquier control del puente
 
 Recursos: `neocp://commands` y `neocp://drum-map`. Prompt: `produce_track`.
+
+## Automatización
+
+`write_automation` funciona como un técnico moviendo el fader. Pone Cubase en *Auto-Latch*, arma la escritura de automatización de la pista y reproduce desde un poco antes del compás indicado. Mientras suena, envía la curva a 40 valores por segundo, cierra la escritura con *Punch Out* y deja la pista en modo *Read* para que oigas el resultado. Antes de grabar, `dry_run=True` enseña una vista previa de la curva sin tocar nada.
+
+Algunos ejemplos de lo que se le puede pedir a Claude:
+* *"Haz un fade in del pad de 8 compases desde el compás 1"*: `target="volume"`, `shape="fade_in"`.
+* *"Bombeo tipo sidechain en el bajo, en cada negra, de 12 dB"*: `shape="duck"`, `depth=12`, `rate_beats=1`.
+* *"Abre el filtro del synth del compás 17 al 25"*: `target="plugin:Retrologue/Cutoff"`, `shape="ramp"`, `start=0.1`, `end=0.9`.
+* *"Panorama que vaya de lado a lado cada 2 compases"*: `target="pan"`, `shape="lfo"`, `rate_beats=8`.
+
+Para pasar de dB a la posición del fader, NeoCP calibra la curva del fader una vez por sesión, en pocos segundos.
 
 ## Claude puede escuchar Cubase
 

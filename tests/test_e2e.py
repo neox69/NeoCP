@@ -68,7 +68,7 @@ def test_select_and_strip(mock_bridge):
 
 def test_direct_access(mock_bridge):
     tree = call(S.explore_host_objects)
-    assert tree["title"] == "Kick" and len(tree["kids"]) == 2
+    assert tree["title"] == "Kick" and len(tree["kids"]) == 3
     found = call(S.find_host_objects, "compressor")
     assert found["found"][0]["id"] == 2
     params = call(S.get_object_parameters, 2, filter="thresh")

@@ -140,6 +140,11 @@ La API de Cubase no permite insertar notas directamente, así que Claude las **g
 
 Si las notas quedan algo desplazadas, ajusta `NEOCP_RECORD_LATENCY_MS` (por ejemplo, `-10` o `15`) o pide `quantize_after=True`.
 
+## 5b. Automatización e instrumentos
+
+* **Automatización** (`write_automation`): no hace falta configurar nada. NeoCP cambia solo el modo de automatización a *Auto-Latch* mientras escribe y lo devuelve a *Touch* al terminar. La primera vez tarda unos segundos más, porque calibra la curva del fader para convertir dB en posición. La escritura se hace en tiempo real, así que una automatización de 8 compases tarda lo que duran esos 8 compases más un compás de pre-roll.
+* **Cargar instrumentos o efectos por nombre** (`load_instrument`, `load_effect`, `create_instrument_track`): necesita **Cubase / Nuendo 15.0.20 o posterior** (MIDI Remote API 1.3). Al crear una pista de instrumento, Cubase puede mostrar su diálogo *Add Track*: acéptalo, con cualquier instrumento o ninguno, y NeoCP cargará el que hayas pedido. En versiones anteriores, carga el instrumento a mano; los parámetros siguen siendo accesibles.
+
 ## 6. Para que Claude escuche
 
 ### Nivel 3: escuchar por medidores (sin configurar nada)

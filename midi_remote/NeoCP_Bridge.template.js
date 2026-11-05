@@ -780,6 +780,75 @@ var handlers = {
         return res
     },
 
+    // plug-in slots below an object: nodes that expose plug-in collections
+    da_plugin_slots: function (p, dev, m) {
+        var da = getDA(p.root)
+        var pm = da.mPluginManager
+        if (!pm || !pm.getNumberOfPluginCollections) throw new Error('plugin manager needs MIDI Remote API 1.3 (Cubase 15)')
+        var start = (typeof p.object_id === 'number') ? p.object_id : da.getBaseObjectID(m)
+        var queue = [[start, 0]], out = [], seen = 0
+        while (queue.length && seen < (p.max_nodes || 1500)) {
+            var it = queue.shift(); seen++
+            var id = it[0], n = 0
+            try { n = pm.getNumberOfPluginCollections(m, id) } catch (e) { n = 0 }
+            if (n > 0) {
+                var node = daNode(da, m, id)
+                node.depth = it[1]
+                node.collections = n
+                // sample a few entries to classify the slot (instrument vs effect)
+                var sub = {}
+                try {
+                    var ci = pm.getIndexOfDefaultPluginCollection(m, id)
+                    if (ci < 0) ci = 0
+                    var c = pm.getPluginCollectionByIndex(m, id, ci)
+                    for (var k = 0; k < Math.min(25, c.mEntries.length); ++k) sub[String(c.mEntries[k].mSubCategories || '').split('|')[0]] = 1
+                } catch (e) { }
+                var kinds = []
+                for (var sk in sub) if (sub.hasOwnProperty(sk) && sk) kinds.push(sk)
+                node.entry_kinds = kinds
+                out.push(node)
+            }
+            if (it[1] < (p.depth || 5)) {
+                var cc = 0
+                try { cc = da.getNumberOfChildObjects(m, id) } catch (e) { }
+                for (var i = 0; i < cc; ++i) queue.push([da.getChildObjectID(m, id, i), it[1] + 1])
+            }
+        }
+        return { slots: out, visited: seen }
+    },
+
+    // search all collections of a slot for plug-ins matching a query
+    da_search_plugins: function (p, dev, m) {
+        var da = getDA(p.root)
+        var pm = da.mPluginManager
+        var q = String(p.query || '').toLowerCase()
+        var kind = p.kind ? String(p.kind).toLowerCase() : null
+        var n = pm.getNumberOfPluginCollections(m, p.object_id)
+        var res = [], seenUID = {}
+        for (var ci = 0; ci < n && res.length < (p.limit || 50); ++ci) {
+            var c = pm.getPluginCollectionByIndex(m, p.object_id, ci)
+            for (var i = 0; i < c.mEntries.length && res.length < (p.limit || 50); ++i) {
+                var e = c.mEntries[i]
+                var sub = String(e.mSubCategories || '')
+                if (kind && sub.toLowerCase().indexOf(kind) < 0) continue
+                var hay = (String(e.mPluginName) + ' ' + String(e.mPluginVendor) + ' ' + sub).toLowerCase()
+                if (q && hay.indexOf(q) < 0) continue
+                if (seenUID[e.mPluginUID]) continue
+                seenUID[e.mPluginUID] = 1
+                res.push({ name: e.mPluginName, vendor: e.mPluginVendor, version: e.mPluginVersion,
+                    sub_categories: sub, uid: e.mPluginUID, collection: c.mName, path: e.mCollectionPath })
+            }
+        }
+        return { items: res, collections: n }
+    },
+
+    // fire-and-forget parameter write used while recording automation
+    da_set_fast: function (p, dev, m) {
+        var da = getDA(p.root)
+        da.setParameterProcessValue(m, p.object_id, p.tag, Math.max(0, Math.min(1, Number(p.value))))
+        return null
+    },
+
     da_load_plugin: function (p, dev, m) {
         var da = getDA(p.root)
         var ok = da.mPluginManager.trySetSlotPlugin(m, p.object_id, String(p.uid), p.dont_ask !== false)
@@ -862,7 +931,7 @@ midiIn.mOnSysex = function (activeDevice, message) {
 }
 
 function processInbox(dev, m) {
-    var budget = 16
+    var budget = 48
     while (inbox.length && budget-- > 0) {
         var item = inbox.shift()
         var res
@@ -873,7 +942,7 @@ function processInbox(dev, m) {
         } catch (e) {
             res = { ok: false, error: String(e && e.message ? e.message : e) }
         }
-        enqueueMessage(0x02, item.id, res)
+        if (!item.req.nr || !res.ok) enqueueMessage(0x02, item.id, res)
     }
     flushOut(dev, CFG.MAX_OUT_CHUNKS_PER_IDLE)
 }

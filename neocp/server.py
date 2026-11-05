@@ -42,6 +42,9 @@ How Cubase thinks (important):
   melody into notes; compare_to_reference compares with a reference track; show_spectrogram lets you SEE it;
   analyze_song_structure finds intro/verse/chorus; gain_stage_tracks, fix_resonances, match_loudness and
   auto_mix_pass close the loop (listen -> adjust -> listen again).
+* write_automation performs fader/pan/send/plug-in moves in real time (ramps, fades, LFO, sidechain duck,
+  trance gate, breakpoints). load_instrument / load_effect / create_instrument_track load plug-ins by
+  name (Cubase 15+).
 * Values are reported with Cubase's own display strings (e.g. "-6.02 dB"), use them to verify.
 Always call get_session_info first to see tracks and transport state.
 """
@@ -1640,6 +1643,341 @@ def auto_mix_pass(start_bar: float = 1.0, bars: float = 8.0, track_target_lufs: 
     after = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars)
     steps["after"] = {k: after.get(k) for k in ("loudness", "stereo", "spectrum", "suggestions")}
     return steps
+
+
+# ============================================================ instruments & effects by name
+
+def _rank_plugins(items: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    q = query.lower().strip()
+    words = [w for w in re.split(r"\W+", q) if w]
+
+    def score(it: Dict[str, Any]) -> float:
+        name = str(it.get("name", "")).lower()
+        sc = 0.0
+        if name == q:
+            sc += 100
+        if name.startswith(q):
+            sc += 50
+        sc += 15 * sum(1 for w in words if w in name)
+        sc += 5 * sum(1 for w in words if w in str(it.get("vendor", "")).lower())
+        return sc - len(name) * 0.05
+    return sorted(items, key=score, reverse=True)
+
+
+def _plugin_slots(b: CubaseBridge, track: Optional[TrackRef]) -> List[Dict[str, Any]]:
+    if track is not None:
+        _select(b, track)
+    slots = b.request("da_plugin_slots", root="selected", depth=5, timeout=15)["slots"]
+    for sl in slots:
+        kinds = [k.lower() for k in sl.get("entry_kinds", [])]
+        sl["kind"] = "instrument" if "instrument" in kinds and "fx" not in kinds else "effect"
+    return slots
+
+
+@tool
+def list_plugin_slots(track: Optional[TrackRef] = None) -> Dict[str, Any]:
+    """Plug-in slots of a track (Cubase 15+): instrument slot and insert slots with their object ids and the
+    plug-in currently loaded (title)."""
+    b = bridge()
+    slots = _plugin_slots(b, track)
+    return {"track": (b.objects.get("sel") or {}).get("title"),
+            "slots": [{"object_id": s["id"], "kind": s["kind"], "title": s.get("title") or None,
+                       "type": s.get("type")} for s in slots]}
+
+
+@tool
+def search_plugins(query: str = "", kind: Optional[str] = None, track: Optional[TrackRef] = None,
+                   limit: int = 30) -> Dict[str, Any]:
+    """Search installed plug-ins by name / vendor / category (Cubase 15+). kind: instrument | effect.
+    Examples: 'piano', 'halion', 'reverb', 'compressor', 'Arturia'."""
+    b = bridge()
+    slots = _plugin_slots(b, track)
+    if not slots:
+        raise CubaseError("no plug-in slot found on the selected track (select an audio/instrument track)")
+    want = (kind or "").lower()
+    slot = next((s for s in slots if want and s["kind"] == want), slots[0])
+    sub = "instrument" if want == "instrument" else ("fx" if want == "effect" else None)
+    items = b.request("da_search_plugins", root="selected", object_id=slot["id"], query=query, kind=sub,
+                      limit=200, timeout=15)["items"]
+    if not items and query:  # query may be a category word ('piano', 'reverb')
+        items = b.request("da_search_plugins", root="selected", object_id=slot["id"], query="", kind=sub,
+                          limit=1000, timeout=20)["items"]
+        items = [i for i in items if query.lower() in json.dumps(i).lower()]
+    return {"results": _rank_plugins(items, query)[:limit] if query else items[:limit]}
+
+
+def _load_into(b: CubaseBridge, slot: Dict[str, Any], name: str, kind_filter: Optional[str]) -> Dict[str, Any]:
+    items = b.request("da_search_plugins", root="selected", object_id=slot["id"], query=name, kind=kind_filter,
+                      limit=100, timeout=15)["items"]
+    if not items:
+        words = [w for w in re.split(r"\W+", name.lower()) if w]
+        allv = b.request("da_search_plugins", root="selected", object_id=slot["id"], query="", kind=kind_filter,
+                         limit=2000, timeout=20)["items"]
+        items = [i for i in allv if any(w in json.dumps(i).lower() for w in words)]
+    if not items:
+        raise CubaseError(f"no plug-in matching '{name}' (try search_plugins)")
+    best = _rank_plugins(items, name)[0]
+    res = b.request("da_load_plugin", root="selected", object_id=slot["id"], uid=best["uid"], dont_ask=True)
+    return {"loaded": best["name"], "vendor": best.get("vendor"), "uid": best["uid"], "ok": res.get("ok"),
+            "slot_object_id": slot["id"], "alternatives": [i["name"] for i in _rank_plugins(items, name)[1:6]]}
+
+
+@tool
+def load_instrument(name: str, track: Optional[TrackRef] = None) -> Dict[str, Any]:
+    """Load a VST instrument by name into an instrument track (Cubase 15+), e.g. 'HALion Sonic', 'Retrologue',
+    'Groove Agent', 'Padshop', or a category word like 'piano' / 'drum'. Replaces the current instrument."""
+    b = bridge()
+    slots = [s for s in _plugin_slots(b, track) if s["kind"] == "instrument"]
+    if not slots:
+        raise CubaseError("this track has no instrument slot: use an instrument track (create_instrument_track)")
+    r = _load_into(b, slots[0], name, "instrument")
+    b.wait_for(lambda: ((b.objects.get("sel.inst") or {}).get("plugin") or {}).get("name") == r["loaded"], 3.0)
+    r["track"] = (b.objects.get("sel") or {}).get("title")
+    r["instrument_now"] = ((b.objects.get("sel.inst") or {}).get("plugin") or {}).get("name")
+    return r
+
+
+@tool
+def load_effect(name: str, track: Optional[TrackRef] = None, slot: Optional[int] = None) -> Dict[str, Any]:
+    """Insert an effect by name (Cubase 15+), e.g. 'Compressor', 'REVerence', 'FabFilter Pro-Q', 'delay'.
+    slot = insert position (0-based); default = first empty insert slot."""
+    b = bridge()
+    fx = [s for s in _plugin_slots(b, track) if s["kind"] == "effect"]
+    if not fx:
+        raise CubaseError("no insert slots found on this track")
+    if slot is not None:
+        if not 0 <= slot < len(fx):
+            raise ValueError(f"slot must be 0..{len(fx) - 1}")
+        target = fx[slot]
+    else:
+        empty = [s for s in fx if not s.get("title") or str(s.get("title")).lower() in ("no effect", "empty", "none")]
+        target = (empty or fx)[0]
+    r = _load_into(b, target, name, "fx")
+    r["track"] = (b.objects.get("sel") or {}).get("title")
+    r["slot"] = fx.index(target)
+    return r
+
+
+@tool
+def create_instrument_track(instrument: str, wait_seconds: float = 60.0) -> Dict[str, Any]:
+    """Add an instrument track and load an instrument by name into it (Cubase 15+). Cubase may show its
+    'Add Track' dialog: confirm it (any or no instrument) and NeoCP loads the requested one automatically."""
+    b = bridge()
+    before = {c["name"] for c in b.bank_channels()}
+    count = len(before)
+    b.command("AddTrack", "Instrument")
+    ok = b.wait_for(lambda: len(b.bank_channels()) > count, wait_seconds)
+    if not ok:
+        raise CubaseError("no new track appeared (was the Add Track dialog cancelled?)")
+    time.sleep(0.6)
+    new = [c for c in b.bank_channels() if c["name"] not in before]
+    if new:
+        b.select_track(new[-1]["index"])
+    r = load_instrument.__wrapped__(instrument)
+    r["new_track"] = new[-1]["name"] if new else (b.objects.get("sel") or {}).get("title")
+    return r
+
+
+# ============================================================ automation
+
+_calib: Dict[str, List[tuple]] = {}
+
+
+def _calibrate(b: CubaseBridge, key: str, kind: str, points: int = 36) -> List[tuple]:
+    """Sweep a fader once to learn Cubase's normalized->dB curve (cached per kind)."""
+    if kind in _calib:
+        return _calib[kind]
+    orig = b.value(key)
+    table = []
+    for i in range(points + 1):
+        x = i / points
+        st = b.set_and_wait(key, x, timeout=0.4)
+        v = _parse_number(b.display(key))
+        if v is not None and v != float("-inf"):
+            table.append((v, x))
+    if orig is not None:
+        b.set_and_wait(key, orig)
+    table.sort()
+    clean = []
+    for v, x in table:  # keep strictly increasing
+        if not clean or (v > clean[-1][0] and x > clean[-1][1]):
+            clean.append((v, x))
+    if len(clean) < 3:
+        raise CubaseError(f"could not calibrate {key}: display values not readable")
+    _calib[kind] = clean
+    return clean
+
+
+def _db_to_norm(table: List[tuple], db: float) -> float:
+    if db <= table[0][0]:
+        return 0.0 if db < table[0][0] - 1 else table[0][1]
+    for (d0, x0), (d1, x1) in zip(table, table[1:]):
+        if d0 <= db <= d1:
+            return x0 + (x1 - x0) * (db - d0) / (d1 - d0)
+    return table[-1][1]
+
+
+def _automation_target(b: CubaseBridge, idx: int, target: str) -> Dict[str, Any]:
+    t = target.strip().lower()
+    pre = b.track_prefix(idx)
+    m = re.fullmatch(r"send\s*(\d)", t)
+    if t == "volume":
+        return {"kind": "slot", "key": f"{pre}.volume", "unit": "db", "cal": "volume"}
+    if t == "pan":
+        return {"kind": "slot", "key": f"{pre}.pan", "unit": "pan"}
+    if t == "mute":
+        return {"kind": "slot", "key": f"{pre}.mute", "unit": "toggle"}
+    if m:
+        return {"kind": "slot", "key": f"{pre}.send{int(m.group(1)) - 1}.level", "unit": "db", "cal": "send"}
+    m = re.fullmatch(r"(qc|quick_control)\s*(\d)", t)
+    if m:
+        b.select_track(idx)
+        return {"kind": "slot", "key": f"sel.qc{int(m.group(2)) - 1}", "unit": "normalized"}
+    m = re.fullmatch(r"instrument[:\s]*(\d+)", t)
+    if m:
+        b.select_track(idx)
+        return {"kind": "slot", "key": f"sel.inst.p{int(m.group(1))}", "unit": "normalized"}
+    if t.startswith("plugin:"):
+        plug, _, param = target.split(":", 1)[1].partition("/")
+        b.select_track(idx)
+        found = [f for f in b.request("da_find", root="selected", query=plug.strip(), depth=6, limit=10,
+                                      timeout=15)["found"] if f.get("params")]
+        if not found:
+            raise CubaseError(f"plug-in '{plug}' not found on the track")
+        prm = b.request("da_params", root="selected", object_id=found[0]["id"], filter=param.strip(), limit=3)["params"]
+        if not prm:
+            raise CubaseError(f"parameter '{param}' not found in '{found[0].get('title')}'")
+        return {"kind": "da", "object_id": found[0]["id"], "tag": prm[0]["tag"], "unit": "normalized",
+                "label": f"{found[0].get('title')} / {prm[0].get('title')}"}
+    if b.has(target):
+        return {"kind": "slot", "key": target, "unit": "normalized"}
+    raise ValueError("target must be volume | pan | mute | sendN | qcN | instrument:N | plugin:<name>/<param> | raw control key")
+
+
+@tool
+def write_automation(track: TrackRef, target: str = "volume", start_bar: float = 1.0, bars: float = 4.0,
+                     shape: Optional[str] = "ramp", points: Optional[List[Dict[str, Any]]] = None,
+                     start: Optional[float] = None, end: Optional[float] = None, center: Optional[float] = None,
+                     depth: Optional[float] = None, rate_beats: float = 1.0, waveform: str = "sine",
+                     curve: str = "linear", steps: Optional[List[float]] = None, attack: float = 0.6,
+                     resolution_hz: float = 40.0, preroll_beats: float = 4.0, dry_run: bool = False,
+                     restore_touch_mode: bool = True, beats_per_bar: int = 4) -> Dict[str, Any]:
+    """Write automation by performing it in real time (Auto-Latch), like moving a fader while Cubase plays.
+
+    target: volume (dB) | pan (-1..1) | mute (0/1) | sendN (dB, 1-8) | qcN (0..1) | instrument:N (0..1) |
+            plugin:<plug-in>/<parameter> (0..1, e.g. "plugin:Compressor/Threshold") | raw control key.
+    Either points=[{"bar": 9, "value": -20}, {"bar": 13, "value": 0}] (or "beat" relative to start) or a shape:
+      ramp (start->end, curve linear|exp|log|s), fade_in, fade_out, lfo (center, depth, rate_beats, waveform
+      sine|triangle|square|saw), duck (sidechain pump: depth, rate_beats, attack=recovery fraction),
+      swell (per rate_beats), steps (trance gate: steps=[...] per rate_beats), hold.
+    dry_run=True only returns a preview. The track is left in Read mode so you hear the result."""
+    from . import automation as AU
+    if points:
+        crv = AU.points_curve(points, beats_per_bar, start_bar, curve)
+    else:
+        unit_hint = "db" if target.lower() in ("volume",) or target.lower().startswith("send") else (
+            "pan" if target.lower() == "pan" else "normalized")
+        crv = AU.shape_curve(shape or "ramp", bars * beats_per_bar, start, end, center, depth, rate_beats,
+                             waveform, curve, steps, attack, unit_hint)
+    length = bars * beats_per_bar
+    preview = AU.sample(crv, length, max(0.25, length / 32))
+    if dry_run:
+        return {"target": target, "start_bar": start_bar, "bars": bars, "preview": preview}
+    b = bridge()
+    idx = _resolve_track(b, track)
+    tgt = _automation_target(b, idx, target)
+    if tgt["unit"] == "db":
+        table = _calibrate(b, tgt["key"], tgt["cal"])
+        to_norm = lambda v: _db_to_norm(table, v)  # noqa: E731
+    elif tgt["unit"] == "pan":
+        to_norm = lambda v: (max(-1.0, min(1.0, v)) + 1) / 2  # noqa: E731
+    elif tgt["unit"] == "toggle":
+        to_norm = lambda v: 1.0 if v >= 0.5 else 0.0  # noqa: E731
+    else:
+        to_norm = lambda v: max(0.0, min(1.0, v))  # noqa: E731
+    pre = b.track_prefix(idx)
+    name = b.objects[pre]["title"]
+    if _flag(b, "transport.play"):
+        transport.__wrapped__("stop")
+    bpm = float(b.transport.get("tempo") or 120.0)
+    pre_beats = min(preroll_beats, (start_bar - 1) * beats_per_bar)
+    sent = 0
+    max_late = 0.0
+    b.command("Automation", "Automation Mode - Auto-Latch")
+    first = to_norm(crv(0.0))
+    try:
+        b.set_and_wait(f"{pre}.awrite", 1.0)
+        b.request("time", locator="cursor",
+                  value=_position_string(b, start_bar - pre_beats / beats_per_bar, beats_per_bar=beats_per_bar))
+        time.sleep(0.15)
+        b.set("transport.play", 1.0)
+        b.wait_for(lambda: bool(_flag(b, "transport.play")), 1.5)
+        t0 = time.perf_counter()
+        frame = 1.0 / max(5.0, min(100.0, resolution_hz if tgt["kind"] == "slot" else min(resolution_hz, 25.0)))
+        last = None
+        next_t = t0
+        while True:
+            now = time.perf_counter()
+            beat = (now - t0) * bpm / 60.0 - pre_beats
+            if beat > length:
+                break
+            if beat >= 0:
+                v = first if beat == 0 else to_norm(crv(beat))
+                if last is None or abs(v - last) >= 1.0 / 4000:
+                    if tgt["kind"] == "slot":
+                        b.set(tgt["key"], v)
+                    else:
+                        b.send_nowait("da_set_fast", root="selected", object_id=tgt["object_id"], tag=tgt["tag"], value=v)
+                    last = v
+                    sent += 1
+                max_late = max(max_late, now - next_t)
+            next_t += frame
+            sl = next_t - time.perf_counter()
+            if sl > 0:
+                time.sleep(sl)
+        # land exactly on the final value, then stop writing
+        endv = to_norm(crv(length))
+        if tgt["kind"] == "slot":
+            b.set(tgt["key"], endv)
+        else:
+            b.send_nowait("da_set_fast", root="selected", object_id=tgt["object_id"], tag=tgt["tag"], value=endv)
+        b.command("Automation", "Punch Out of Latch Automation")
+        time.sleep(0.05)
+    finally:
+        b.set("transport.stop", 1.0)
+        time.sleep(0.05)
+        b.set("transport.stop", 0.0)
+        b.set(f"{pre}.awrite", 0.0)
+        b.set(f"{pre}.aread", 1.0)
+        if restore_touch_mode:
+            b.command("Automation", "Automation Mode - Touch")
+    return {"track": name, "target": tgt.get("label", target), "start_bar": start_bar, "bars": bars,
+            "values_sent": sent, "max_late_ms": round(max_late * 1000, 1), "tempo": bpm,
+            "preview": preview[:: max(1, len(preview) // 12)],
+            "note": "Track left in Read mode. Undo with project_action('undo') or clear_automation."}
+
+
+@tool
+def clear_automation(track: TrackRef, confirm: bool = False) -> Dict[str, Any]:
+    """Delete ALL automation of a track (destructive: needs confirm=True)."""
+    if not confirm:
+        return {"error": "destructive: call again with confirm=True"}
+    b = bridge()
+    sel = _select(b, track)
+    b.command("Automation", "Delete Automation of Selected Tracks")
+    return {"cleared": sel["name"]}
+
+
+@tool
+def set_automation_mode(mode: str = "touch") -> Dict[str, Any]:
+    """Global automation mode: touch | latch (Auto-Latch) | cross_over | trim."""
+    cmds = {"touch": "Automation Mode - Touch", "latch": "Automation Mode - Auto-Latch",
+            "auto_latch": "Automation Mode - Auto-Latch", "cross_over": "Automation Mode - Cross-Over",
+            "trim": "Automation Mode - Trim"}
+    if mode not in cmds:
+        raise ValueError(f"mode must be one of {', '.join(cmds)}")
+    bridge().command("Automation", cmds[mode])
+    return {"mode": mode}
 
 
 # ============================================================ resources & prompts
