@@ -26,12 +26,13 @@ Este proyecto parte del análisis de los servidores existentes: [hedidjs/cubase-
 | Medidores VU, Control Room | ✗ | ✗ | **✓** |
 | **Escuchar el audio** | ✗ | ✗ | **✓ LUFS, true peak, espectro, resonancias, tonalidad, acordes, tempo, estéreo y consejos de mezcla** |
 | Tararear → notas en una pista | ✗ | ✗ | **✓** |
+| **Transcripción polifónica** (audio → MIDI de acordes, bajo y melodía) | ✗ | ✗ | **✓ con nombres de acordes, y lo graba en tus pistas** |
 | Ver el sonido (espectrograma) | ✗ | ✗ | **✓ imagen con rejilla de compases** |
 | Estructura de la canción | ✗ | ✗ | **✓ intro/estrofa/estribillo/puente, con marcadores en el proyecto** |
 | Mezcla en bucle cerrado | ✗ | ✗ | **✓ escucha → ajusta faders/EQ → vuelve a escuchar** |
 | Automatización (curvas, fades, LFO, sidechain, trance gate) | ✗ | ✗ | **✓ volumen, pan, envíos, quick controls, cualquier parámetro de plug-in** |
 | Cargar instrumento o efecto por nombre | ✗ | ✓ | **✓ "pon un Retrologue", "añade una reverb" (Cubase 15)** |
-| Herramientas MCP | 13 | ~20 | **79, más recursos y prompts** |
+| Herramientas MCP | 13 | ~20 | **80, más recursos y prompts** |
 | Tests | ✗ | parciales | **Extremo a extremo: el script real corre en un simulador de Cubase** |
 
 ## Arquitectura
@@ -140,7 +141,7 @@ claude mcp add neocp -- neocp
 
 Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
-## Herramientas (79)
+## Herramientas (80)
 
 **Conexión y sesión**: `connection_status`, `reconnect`, `get_session_info`, `list_tracks`, `get_track_info`, `get_selected_track_info`
 
@@ -166,9 +167,29 @@ Después pregunta a Claude: *"¿qué hay en mi proyecto de Cubase?"*
 
 **Instrumentos y efectos por nombre** (Cubase 15+): `load_instrument`, `load_effect`, `create_instrument_track`, `search_plugins`, `list_plugin_slots`
 
+**Transcripción polifónica**: `transcribe_polyphonic` pasa a MIDI un audio con acordes, bajo y melodía a la vez. Separa las partes, nombra los acordes por compás, exporta un `.mid` por partes y puede grabarlas directamente en tus pistas.
+
 **Avanzado**: `list_controls` y `set_control`, que dan acceso directo a cualquier control del puente
 
 Recursos: `neocp://commands` y `neocp://drum-map`. Prompt: `produce_track`.
+
+## Transcripción polifónica
+
+Ejemplos de lo que se le puede pedir a Claude:
+* *"Saca los acordes y el bajo de este audio y grábalos en las pistas Keys y Bass"*.
+* *"Escucha los compases 1-8 del piano y pásalo a MIDI"*.
+
+Cómo funciona, todo en numpy y sin modelos pesados:
+1. Construye un espectrograma en escala de semitonos.
+2. Aplica NMF con plantillas armónicas de las teclas del piano.
+3. Detecta ataques con alta resolución temporal, para que las notas empiecen donde suenan y se separen las repetidas.
+4. Elimina los falsos armónicos (octavas y quintas fantasma) y la fuga espectral en graves.
+
+Precisión con señales de prueba:
+* **Acordes con bajo**: 100 %.
+* **Pad + melodía + percusión**: ~87 % de precisión y ~90 % de *recall*.
+
+Funciona mejor con material limpio: piano, guitarra, pads o sintes. Con baterías fuertes o mezclas densas acierta menos; en esos casos conviene usar `threshold` y revisar el resultado.
 
 ## Automatización
 

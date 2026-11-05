@@ -20,7 +20,7 @@
 //   python scripts/build_midi_remote.py
 //-----------------------------------------------------------------------------
 
-var SCRIPT_VERSION = "1.1.0"
+var SCRIPT_VERSION = "1.2.0"
 var PROTOCOL_VERSION = 1
 
 // ---- configuration ----------------------------------------------------------

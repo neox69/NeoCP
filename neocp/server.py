@@ -42,6 +42,8 @@ How Cubase thinks (important):
   melody into notes; compare_to_reference compares with a reference track; show_spectrogram lets you SEE it;
   analyze_song_structure finds intro/verse/chorus; gain_stage_tracks, fix_resonances, match_loudness and
   auto_mix_pass close the loop (listen -> adjust -> listen again).
+* transcribe_polyphonic turns audio with chords + bass + melody into MIDI parts (and chord names),
+  and can record them into tracks.
 * write_automation performs fader/pan/send/plug-in moves in real time (ramps, fades, LFO, sidechain duck,
   trance gate, breakpoints). load_instrument / load_effect / create_instrument_track load plug-ins by
   name (Cubase 15+).
@@ -1452,6 +1454,65 @@ def transcribe_audio(path: Optional[str] = None, seconds: float = 8.0, device: O
     if record_to_track is not None and notes:
         r = record_notes_to_track.__wrapped__(record_to_track, notes, start_bar)
         res["recorded"] = json.loads(r) if isinstance(r, str) else r
+    return res
+
+
+# ============================================================ polyphonic transcription
+
+@tool
+def transcribe_polyphonic(path: Optional[str] = None, start_bar: float = 1.0, bars: Optional[float] = None,
+                          bpm: Optional[float] = None, quantize: Optional[float] = 0.25, threshold: float = 0.12,
+                          max_polyphony: int = 6, bass_max_note: str = "E3",
+                          record_to_tracks: Optional[Dict[str, TrackRef]] = None, record_start_bar: Optional[float] = None,
+                          export_midi: bool = True, include_notes: bool = True) -> Dict[str, Any]:
+    """Transcribe POLYPHONIC audio (chords, bass, melody together) into MIDI notes, split into parts
+    bass / chords / melody, with chord names per half bar.
+    Source: an audio file (path), or LISTEN to `bars` bars of the Cubase project from start_bar, or the last
+    capture. Then optionally export a MIDI file (one track per part) and/or record parts straight into
+    Cubase tracks: record_to_tracks={"bass": "Bass", "chords": "Keys", "melody": "Lead"} (or "all": track).
+    threshold: lower = more notes (0.06-0.25). Works best on clean material (piano, guitar, pads, synths);
+    loud drums reduce accuracy. Notes are in beats at bpm (project tempo by default)."""
+    from . import music as Mu
+    from . import transcribe as T
+    offset_bar = start_bar
+    if path:
+        from . import audio as A
+        data, sr = A.load_file(os.path.expanduser(path), 600)
+        src = path
+        offset_bar = 1.0
+    else:
+        if bars:
+            listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness"])
+        data, sr, bpm_l, offset_bar, src = _source_audio(None)
+        bpm = bpm or bpm_l
+    if bpm is None and _bridge and _bridge.connected:
+        bpm = _bridge.transport.get("tempo")
+    if bpm is None:
+        from . import audio as A
+        bpm = A.detect_tempo(A.to_float(data).mean(axis=1), sr).get("bpm") or 120.0
+    res = T.transcribe(data, sr, float(bpm), quantize, threshold, max_polyphony,
+                       bass_max=Mu.note_to_midi(bass_max_note))
+    res["source"] = src
+    res["source_start_bar"] = offset_bar
+    for c in res["chords"]:
+        c["bar"] = round(offset_bar + c["beat"] / 4.0, 2)
+    parts = res.get("parts", {})
+    if export_midi and res["notes"]:
+        tracks = {k.capitalize(): v for k, v in parts.items() if v} or {"Transcription": res["notes"]}
+        exp = export_midi_file.__wrapped__(tracks, "transcription.mid", float(bpm))
+        res["midi_file"] = exp.get("path") if isinstance(exp, dict) else exp
+    if record_to_tracks:
+        rec = {}
+        at = record_start_bar or offset_bar
+        for part, trk in record_to_tracks.items():
+            notes = res["notes"] if part == "all" else parts.get(part, [])
+            if notes:
+                r = record_notes_to_track.__wrapped__(trk, notes, at)
+                rec[part] = r if isinstance(r, dict) else json.loads(r)
+        res["recorded"] = rec
+    if not include_notes:
+        res.pop("notes", None)
+        res.pop("parts", None)
     return res
 
 

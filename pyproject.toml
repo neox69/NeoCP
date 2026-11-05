@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "neocp"
-version = "1.1.0"
+version = "1.2.0"
 description = "MCP server for Steinberg Cubase / Nuendo: full bidirectional control through the MIDI Remote API"
 readme = "README.md"
 license = "MIT"
