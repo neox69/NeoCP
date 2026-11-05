@@ -164,7 +164,7 @@ def _set_level(b: CubaseBridge, key: str, db: Optional[float], normalized: Optio
 
 def _channel_summary(b: CubaseBridge, pre: str, index: Optional[int] = None) -> Dict[str, Any]:
     o = b.objects.get(pre) or {}
-    d: Dict[str, Any] = {"name": o.get("title")}
+    d: Dict[str, Any] = {"name": b.channel_title(pre)}
     if index is not None:
         d["index"] = index
     if o.get("color"):
@@ -255,7 +255,7 @@ def get_session_info() -> Dict[str, Any]:
         "cycle": _flag(b, "transport.cycle"), "metronome": _flag(b, "transport.metronome"),
         "cursor": tr.get("cursor"), "cursor_format": tr.get("cursor_format"),
         "cursor_secondary": tr.get("cursor2"), "left_locator": tr.get("left"), "right_locator": tr.get("right"),
-        "selected_track": (b.objects.get("sel") or {}).get("title"),
+        "selected_track": b.channel_title("sel"),
         "tracks": [_channel_summary(b, f"ch{c['bank_slot']}", c["index"]) for c in b.bank_channels()],
         "bank_offset": b.bank_offset, "bank_size": b.bank_size,
         "busses": [{"name": (b.objects.get(f"io{i}") or {}).get("title"), "volume": _val(b, f"io{i}.volume")}
@@ -533,14 +533,22 @@ def run_selftest(write_tests: bool = True) -> Dict[str, Any]:
         rec("round trip", False, str(e))
     b.refresh()
     tracks = b.bank_channels()
-    rec("tracks mirrored", bool(tracks), f"{len(tracks)} tracks" if tracks else "no tracks",
-        "open a project with at least one track")
+    if not tracks:
+        vols = [b.get(f"ch{i}.volume") for i in range(b.bank_size) if b.has(f"ch{i}.volume")]
+        with_value = sum(1 for v in vols if v["value"] is not None)
+        detail = (f"no track names received ({with_value} bank channels report a volume value)"
+                  if with_value else "no tracks: the mixer bank is empty")
+    else:
+        detail = f"{len(tracks)} tracks: " + ", ".join(t["name"] for t in tracks[:8])
+    rec("tracks mirrored", bool(tracks), detail,
+        "open a project with audio/instrument/MIDI tracks; if it has tracks and this still fails, send this "
+        "report (title callbacks not delivered)")
     tempo = b.transport.get("tempo")
     rec("tempo read", tempo is not None, tempo)
     rec("cursor read", b.transport.get("cursor") is not None, b.transport.get("cursor"),
         "the transport position callback did not fire: move the cursor once in Cubase")
-    sel = (b.objects.get("sel") or {}).get("title")
-    rec("selected track", bool(sel), sel or "none", "select a track in Cubase")
+    sel = b.channel_title("sel")
+    rec("selected track", bool(sel), sel or "none", "click a track in Cubase's project window to select it")
     if write_tests:
         if tempo:
             try:
@@ -758,7 +766,7 @@ def create_track(track_type: str = "midi", count: int = 1, after_track: Optional
         b.command(*TRACK_TYPES[track_type])
         time.sleep(0.35)
     b.wait_for(lambda: len(b.bank_channels()) >= min(b.bank_size, before + count), 2.0)
-    return {"created": track_type, "count": count, "selected_track": (b.objects.get("sel") or {}).get("title"),
+    return {"created": track_type, "count": count, "selected_track": b.channel_title("sel"),
             "tracks": b.bank_channels()}
 
 
@@ -795,7 +803,7 @@ def track_operation(operation: str, track: Optional[TrackRef] = None, confirm: b
         cat, cmd = _best_command(cmd)
     b.command(cat, cmd)
     time.sleep(0.3)
-    return {"done": operation, "selected_track": (b.objects.get("sel") or {}).get("title"), "tracks": b.bank_channels()}
+    return {"done": operation, "selected_track": b.channel_title("sel"), "tracks": b.bank_channels()}
 
 
 # ============================================================ commands
@@ -941,7 +949,7 @@ def set_quantize_grid(grid: str = "1/16", triplet: bool = False, dotted: bool = 
 def _target(b: CubaseBridge, track: Optional[TrackRef]) -> Dict[str, Any]:
     if track is not None:
         return _select(b, track)
-    return {"name": (b.objects.get("sel") or {}).get("title")}
+    return {"name": b.channel_title("sel")}
 
 
 @tool
@@ -1902,7 +1910,7 @@ def gain_stage_tracks(target_lufs: float = -20.0, tracks: Optional[List[TrackRef
     out = []
     for idx in idxs:
         pre = b.track_prefix(idx)
-        name = b.objects[pre]["title"]
+        name = b.channel_title(pre)
         rep = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["loudness"], solo_track=idx)
         lufs = (rep.get("loudness") or {}).get("integrated_lufs")
         row: Dict[str, Any] = {"track": name, "measured_lufs": lufs}
@@ -1935,7 +1943,7 @@ def fix_resonances(track: TrackRef, start_bar: float = 1.0, bars: float = 4.0, m
             cut = -min(max_cut_db, r["excess_db"] / 2)
             eq = set_eq_band.__wrapped__(band, track=idx, on=True, gain_db=round(cut, 1), freq_hz=r["freq_hz"], q=q)
             applied.append({"band": band, "freq_hz": r["freq_hz"], "note": r["note"], "gain_db": round(cut, 1), "eq": eq})
-    result: Dict[str, Any] = {"track": b.objects[b.track_prefix(idx)]["title"], "resonances_found": res, "eq_cuts": applied}
+    result: Dict[str, Any] = {"track": b.channel_title(b.track_prefix(idx)), "resonances_found": res, "eq_cuts": applied}
     if verify and applied:
         after = listen_to_cubase.__wrapped__(start_bar=start_bar, bars=bars, analyses=["spectrum", "loudness"], solo_track=idx)
         result["resonances_after"] = (after.get("spectrum") or {}).get("resonances")
@@ -2043,7 +2051,7 @@ def list_plugin_slots(track: Optional[TrackRef] = None) -> Dict[str, Any]:
     plug-in currently loaded (title)."""
     b = bridge()
     slots = _plugin_slots(b, track)
-    return {"track": (b.objects.get("sel") or {}).get("title"),
+    return {"track": b.channel_title("sel"),
             "slots": [{"object_id": s["id"], "kind": s["kind"], "title": s.get("title") or None,
                        "type": s.get("type")} for s in slots]}
 
@@ -2095,7 +2103,7 @@ def load_instrument(name: str, track: Optional[TrackRef] = None) -> Dict[str, An
         raise CubaseError("this track has no instrument slot: use an instrument track (create_instrument_track)")
     r = _load_into(b, slots[0], name, "instrument")
     b.wait_for(lambda: ((b.objects.get("sel.inst") or {}).get("plugin") or {}).get("name") == r["loaded"], 3.0)
-    r["track"] = (b.objects.get("sel") or {}).get("title")
+    r["track"] = b.channel_title("sel")
     r["instrument_now"] = ((b.objects.get("sel.inst") or {}).get("plugin") or {}).get("name")
     return r
 
@@ -2116,7 +2124,7 @@ def load_effect(name: str, track: Optional[TrackRef] = None, slot: Optional[int]
         empty = [s for s in fx if not s.get("title") or str(s.get("title")).lower() in ("no effect", "empty", "none")]
         target = (empty or fx)[0]
     r = _load_into(b, target, name, "fx")
-    r["track"] = (b.objects.get("sel") or {}).get("title")
+    r["track"] = b.channel_title("sel")
     r["slot"] = fx.index(target)
     return r
 
@@ -2137,7 +2145,7 @@ def create_instrument_track(instrument: str, wait_seconds: float = 60.0) -> Dict
     if new:
         b.select_track(new[-1]["index"])
     r = load_instrument.__wrapped__(instrument)
-    r["new_track"] = new[-1]["name"] if new else (b.objects.get("sel") or {}).get("title")
+    r["new_track"] = new[-1]["name"] if new else b.channel_title("sel")
     return r
 
 
@@ -2269,7 +2277,7 @@ def write_automation(track: TrackRef, target: str = "volume", start_bar: float =
     else:
         to_norm = lambda v: max(0.0, min(1.0, v))  # noqa: E731
     pre = b.track_prefix(idx)
-    name = b.objects[pre]["title"]
+    name = b.channel_title(pre)
     if _flag(b, "transport.play"):
         transport.__wrapped__("stop")
     bpm = float(b.transport.get("tempo") or 120.0)

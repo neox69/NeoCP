@@ -167,3 +167,15 @@ def test_review_project(mock_bridge):
     levels = [f["level"] for f in r["findings"]]
     assert r["tracks"] == 3 and levels[0] == "high"
     assert any("Solo" in f["finding"] for f in r["findings"]) and any("armed" in f["finding"] for f in r["findings"])
+
+
+def test_channel_title_fallback(mock_bridge):
+    b = mock_bridge
+    sid = b.key_to_id["ch0.volume"]
+    row = list(b.state.get(sid) or [None] * 5)
+    while len(row) < 5:
+        row.append(None)
+    row[3] = "Drums"
+    b.state[sid] = row
+    b.objects.pop("ch0", None)  # host-object title callback never arrived
+    assert b.bank_channels()[0]["name"] == "Drums"

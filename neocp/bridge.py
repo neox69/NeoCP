@@ -286,11 +286,22 @@ class CubaseBridge:
     def bank_size(self) -> int:
         return int(self.info.get("bank_size", 32))
 
+    def channel_title(self, prefix: str) -> Optional[str]:
+        """Channel name: host-object title, or (fallback) the object title sent with its volume value."""
+        o = self.objects.get(prefix) or {}
+        if o.get("title"):
+            return o["title"]
+        sid = self.key_to_id.get(f"{prefix}.volume")
+        row = self.state.get(sid) if sid is not None else None
+        if row and len(row) > 3 and row[3]:
+            return row[3]
+        return None
+
     def bank_channels(self) -> List[Dict[str, Any]]:
         out = []
         for i in range(self.bank_size):
             o = self.objects.get(f"ch{i}") or {}
-            title = o.get("title")
+            title = self.channel_title(f"ch{i}")
             if not title:
                 continue
             out.append({"bank_slot": i, "index": self.bank_offset + i, "name": title, "color": o.get("color")})
@@ -340,15 +351,15 @@ class CubaseBridge:
 
     def track_prefix(self, index: int) -> str:
         slot = self.ensure_track_in_bank(index)
-        if not (self.objects.get(f"ch{slot}") or {}).get("title"):
+        if not self.channel_title(f"ch{slot}"):
             raise CubaseError(f"there is no track with index {index}")
         return f"ch{slot}"
 
     def select_track(self, index: int, wait: float = 1.0) -> str:
         pre = self.track_prefix(index)
-        name = self.objects[pre]["title"]
+        name = self.channel_title(pre)
         self.set(f"{pre}.selected", 1.0)
-        self.wait_for(lambda: (self.objects.get("sel") or {}).get("title") == name, wait)
+        self.wait_for(lambda: self.channel_title("sel") == name, wait)
         time.sleep(0.1)
         return name
 

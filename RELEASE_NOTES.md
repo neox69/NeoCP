@@ -9,6 +9,9 @@ Claude (or any MCP client) can now see, control and **listen to** Steinberg Cuba
 
 The installer needs no admin rights and no pre-installed Python. Full guide (Spanish): `docs/CONFIGURAR_CUBASE.md`, inside the ZIP.
 
+## New in 1.3.2
+* Track names fall back to the object title sent with each channel's volume value, for hosts where channel title callbacks are not delivered. The self test now says whether the bank is empty or names are missing.
+
 ## New in 1.3.1
 * `review_project`: instant project review without audio (forgotten solos and mutes, armed tracks, hot or unbalanced faders, everything centred, no sends, default tempo), with the tool that fixes each finding.
 
