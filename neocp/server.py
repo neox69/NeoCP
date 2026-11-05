@@ -92,16 +92,22 @@ def tool(fn):
     """Register an MCP tool that converts errors into readable messages."""
     import functools
 
+    exempt = fn.__name__ in ("stop_notes", "connection_status", "search_commands", "list_command_categories")
+
     @functools.wraps(fn)
     def wrapper(*a, **kw):
         try:
-            res = fn(*a, **kw)
+            if exempt or _bridge is None:
+                res = fn(*a, **kw)
+            else:
+                with _bridge.op_lock:
+                    res = fn(*a, **kw)
             if isinstance(res, (str, list)) or type(res).__name__ == "Image":
                 return res
             return _ok(res)
         except CubaseError as e:
             return _ok({"error": str(e)})
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, IndexError) as e:
             return _ok({"error": f"{type(e).__name__}: {e}"})
     return mcp.tool()(wrapper)
 
@@ -366,26 +372,45 @@ def set_tempo(bpm: float) -> Dict[str, Any]:
     return {"tempo_bpm": b.transport.get("tempo")}
 
 
+def _is_musical(fmt: Any) -> bool:
+    f = str(fmt or "").lower()
+    return (not f) or "bar" in f or "beat" in f or "musical" in f
+
+
 def _position_string(b: CubaseBridge, bar: Optional[float], beat: float = 1, position: Optional[str] = None,
                      beats_per_bar: int = 4) -> str:
+    """Position string in the PRIMARY time format (bars.beats.16th.ticks, or seconds)."""
     if position:
         return position
     if bar is None:
         raise ValueError("give bar or position")
-    fmt = str(b.transport.get("cursor_format") or "").lower()
-    whole_bar = int(bar)
-    extra_beats = (bar - whole_bar) * beats_per_bar + (beat - 1)
-    if not fmt or "bar" in fmt or "beat" in fmt or "musical" in fmt:
-        bt = int(extra_beats)
-        sixteenth = int(round((extra_beats - bt) * 4))
-        return f"{whole_bar}.{bt + 1}.{sixteenth + 1}.0"
+    total16 = int(round(((bar - 1) * beats_per_bar + (beat - 1)) * 4))
+    total16 = max(0, total16)
+    if _is_musical(b.transport.get("cursor_format")):
+        bars_, rem = divmod(total16, beats_per_bar * 4)
+        beats_, six = divmod(rem, 4)
+        return f"{bars_ + 1}.{beats_ + 1}.{six + 1}.0"
     tempo = float(b.transport.get("tempo") or 120.0)
-    secs = ((whole_bar - 1) * beats_per_bar + extra_beats) * 60.0 / tempo
-    if "sample" in fmt:
-        return str(int(secs * 48000))
+    secs = total16 / 4 * 60.0 / tempo
     h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    return f"{int(h)}:{int(m):02d}:{s:06.3f}"
+    m, s_ = divmod(rem, 60)
+    return f"{int(h)}:{int(m):02d}:{s_:06.3f}"
+
+
+def _locate(b: CubaseBridge, locator: str, bar: Optional[float], beat: float = 1, position: Optional[str] = None,
+            beats_per_bar: int = 4) -> str:
+    """Set a locator; uses the secondary display when only it is musical (e.g. primary = timecode)."""
+    if position is None and not _is_musical(b.transport.get("cursor_format")) and \
+            _is_musical(b.transport.get("cursor2_format")) and b.transport.get("cursor2_format"):
+        total16 = max(0, int(round(((bar - 1) * beats_per_bar + (beat - 1)) * 4)))
+        bars_, rem = divmod(total16, beats_per_bar * 4)
+        beats_, six = divmod(rem, 4)
+        pos = f"{bars_ + 1}.{beats_ + 1}.{six + 1}.0"
+        b.request("time", locator=locator, value=pos, display="secondary")
+        return pos
+    pos = _position_string(b, bar, beat, position, beats_per_bar)
+    b.request("time", locator=locator, value=pos)
+    return pos
 
 
 @tool
@@ -395,8 +420,7 @@ def set_position(bar: Optional[float] = None, beat: float = 1, position: Optiona
     or a raw position string in Cubase's primary time format (e.g. "17.1.1.0" or "0:01:30.000").
     locator: cursor | left | right."""
     b = bridge()
-    pos = _position_string(b, bar, beat, position)
-    b.request("time", locator=locator, value=pos)
+    pos = _locate(b, locator, bar, beat, position)
     time.sleep(0.1)
     return {"set": pos, **get_transport_state.__wrapped__()}
 
@@ -405,8 +429,8 @@ def set_position(bar: Optional[float] = None, beat: float = 1, position: Optiona
 def set_loop_range(start_bar: float, end_bar: float, enable_cycle: bool = True) -> Dict[str, Any]:
     """Set left/right locators to a bar range (end exclusive) and optionally enable cycle."""
     b = bridge()
-    b.request("time", locator="left", value=_position_string(b, start_bar))
-    b.request("time", locator="right", value=_position_string(b, end_bar))
+    _locate(b, "left", start_bar)
+    _locate(b, "right", end_bar)
     if enable_cycle:
         b.set("transport.cycle", 1.0)
     time.sleep(0.1)
@@ -611,7 +635,9 @@ def mixer_overview() -> Dict[str, Any]:
     meters = {}
     try:
         for sid, v in b.request("meters")["slots"]:
-            meters[b.keys[sid]] = v
+            k = b.key_of(sid)
+            if k:
+                meters[k] = v
     except CubaseError:
         pass
     rows = []
@@ -631,7 +657,9 @@ def get_meters() -> Dict[str, Any]:
     res = b.request("meters")
     out: Dict[str, Any] = {}
     for sid, v in res["slots"]:
-        key = b.keys[sid]
+        key = b.key_of(sid)
+        if not key:
+            continue
         pre, _, kind = key.partition(".")
         name = (b.objects.get(pre) or {}).get("title")
         if not name:
@@ -642,11 +670,16 @@ def get_meters() -> Dict[str, Any]:
 
 @tool
 def bank(action: str = "reset", times: int = 1) -> Dict[str, Any]:
-    """Move the mirrored mixer bank (for projects with many tracks): next | prev | reset | shift_left | shift_right."""
+    """Move the mirrored mixer bank (for projects with many tracks): next | prev | reset | page (times = page
+    number). Movement is verified with Cubase, so the reported indexes are always real."""
     b = bridge()
-    r = b.action(f"bank_{action}", times=times)
-    time.sleep(0.25)
-    return {**r, "tracks": b.bank_channels()}
+    cur = b.bank_offset // b.bank_size
+    target = {"reset": 0, "next": cur + times, "prev": max(0, cur - times), "page": times}.get(action)
+    if target is None:
+        raise ValueError("action must be next | prev | reset | page")
+    moved = b.move_bank(target)
+    return {"bank_page": moved, "bank_offset": b.bank_offset, "requested_page": target,
+            "at_last_page": moved < target, "tracks": b.bank_channels()}
 
 
 # ============================================================ tracks: create / edit
@@ -677,7 +710,7 @@ def create_track(track_type: str = "midi", count: int = 1, after_track: Optional
     for _ in range(max(1, int(count))):
         b.command(*TRACK_TYPES[track_type])
         time.sleep(0.35)
-    b.wait_for(lambda: len(b.bank_channels()) >= before + count, 2.0)
+    b.wait_for(lambda: len(b.bank_channels()) >= min(b.bank_size, before + count), 2.0)
     return {"created": track_type, "count": count, "selected_track": (b.objects.get("sel") or {}).get("title"),
             "tracks": b.bank_channels()}
 
@@ -1311,14 +1344,14 @@ def record_notes_to_track(track: TrackRef, notes: List[Dict[str, Any]], start_ba
         b.set_and_wait(f"{pre}.rec", 1.0)
         if rec_tempo != original_tempo:
             b.request("tempo", bpm=rec_tempo)
-        b.request("time", locator="cursor", value=_position_string(b, start_pos, beats_per_bar=beats_per_bar))
+        _locate(b, "cursor", start_pos, beats_per_bar=beats_per_bar)
         time.sleep(0.2)
-        b.set("transport.record", 1.0)
-        b.set("transport.play", 1.0)
-        b.wait_for(lambda: bool(_flag(b, "transport.record")), 2.0)
         latency = float(os.environ.get("NEOCP_RECORD_LATENCY_MS", "0")) / 1000.0
+        t_start = time.perf_counter() + latency  # timeline beat 0 = when record is sent (+ latency, may be < 0)
+        b.set("transport.record", 1.0)
+        b.wait_for(lambda: bool(_flag(b, "transport.record")), 2.0)
         _play_stop.clear()
-        stats = _play(b.link, M.shift(canon, pre_beats), rec_tempo, channel, start_delay=latency, stop=_play_stop)
+        stats = _play(b.link, M.shift(canon, pre_beats), rec_tempo, channel, stop=_play_stop, t0=t_start)
         time.sleep(60.0 / rec_tempo * 0.5)
     finally:
         all_notes_off(b.link)
@@ -1460,7 +1493,7 @@ def listen_to_cubase(start_bar: float = 1.0, bars: float = 8.0, device: Optional
         b.set_and_wait(f"{solo_pre}.solo", 1.0)
     if _flag(b, "transport.play"):
         transport.__wrapped__("stop")
-    b.request("time", locator="cursor", value=_position_string(b, start_bar, beats_per_bar=beats_per_bar))
+    _locate(b, "cursor", start_bar, beats_per_bar=beats_per_bar)
     time.sleep(0.15)
     rec = capture.Recorder(device).start()
     t_rec = time.time()
@@ -1496,7 +1529,7 @@ def listen_to_meters(seconds: float = 8.0, start_bar: Optional[float] = None, in
     b = bridge()
     started = False
     if start_bar is not None:
-        b.request("time", locator="cursor", value=_position_string(b, start_bar))
+        _locate(b, "cursor", start_bar)
     if not _flag(b, "transport.play"):
         b.set("transport.play", 1.0)
         started = True
@@ -1507,7 +1540,9 @@ def listen_to_meters(seconds: float = 8.0, start_bar: Optional[float] = None, in
         time.sleep(0.2)
         while time.time() < end:
             for sid, v in b.request("meters")["slots"]:
-                key = b.keys[sid]
+                key = b.key_of(sid)
+                if not key:
+                    continue
                 pre, _, kind = key.partition(".")
                 name = (b.objects.get(pre) or {}).get("title")
                 if not name or v is None:
@@ -1788,7 +1823,7 @@ def analyze_song_structure(path: Optional[str] = None, start_bar: float = 1.0, b
     if mark_in_project:
         b = bridge()
         for sec in res["sections"]:
-            b.request("time", locator="cursor", value=_position_string(b, sec["start_bar"], beats_per_bar=beats_per_bar))
+            _locate(b, "cursor", sec["start_bar"], beats_per_bar=beats_per_bar)
             time.sleep(0.08)
             b.command("Marker", "Insert Marker")
             time.sleep(0.08)
@@ -2101,23 +2136,32 @@ def _db_to_norm(table: List[tuple], db: float) -> float:
 def _automation_target(b: CubaseBridge, idx: int, target: str) -> Dict[str, Any]:
     t = target.strip().lower()
     pre = b.track_prefix(idx)
-    m = re.fullmatch(r"send\s*(\d)", t)
+    m = re.fullmatch(r"send\s*(\d+)", t)
     if t == "volume":
         return {"kind": "slot", "key": f"{pre}.volume", "unit": "db", "cal": "volume"}
     if t == "pan":
         return {"kind": "slot", "key": f"{pre}.pan", "unit": "pan"}
     if t == "mute":
         return {"kind": "slot", "key": f"{pre}.mute", "unit": "toggle"}
-    if m:
-        return {"kind": "slot", "key": f"{pre}.send{int(m.group(1)) - 1}.level", "unit": "db", "cal": "send"}
-    m = re.fullmatch(r"(qc|quick_control)\s*(\d)", t)
+    if m:  # 0-based like set_send / get_track_info
+        key = f"{pre}.send{int(m.group(1))}.level"
+        if not b.has(key):
+            raise ValueError(f"send slot {m.group(1)} does not exist (0..{int(b.info.get('send_slots', 8)) - 1})")
+        return {"kind": "slot", "key": key, "unit": "db", "cal": "send"}
+    m = re.fullmatch(r"(qc|quick_control)\s*(\d+)", t)
     if m:
         b.select_track(idx)
-        return {"kind": "slot", "key": f"sel.qc{int(m.group(2)) - 1}", "unit": "normalized"}
+        key = f"sel.qc{int(m.group(2))}"
+        if not b.has(key):
+            raise ValueError("quick control index must be 0..7")
+        return {"kind": "slot", "key": key, "unit": "normalized"}
     m = re.fullmatch(r"instrument[:\s]*(\d+)", t)
     if m:
         b.select_track(idx)
-        return {"kind": "slot", "key": f"sel.inst.p{int(m.group(1))}", "unit": "normalized"}
+        key = f"sel.inst.p{int(m.group(1))}"
+        if not b.has(key):
+            raise ValueError("instrument parameter index must be 0..15")
+        return {"kind": "slot", "key": key, "unit": "normalized"}
     if t.startswith("plugin:"):
         plug, _, param = target.split(":", 1)[1].partition("/")
         b.select_track(idx)
@@ -2145,7 +2189,8 @@ def write_automation(track: TrackRef, target: str = "volume", start_bar: float =
                      restore_touch_mode: bool = True, beats_per_bar: int = 4) -> Dict[str, Any]:
     """Write automation by performing it in real time (Auto-Latch), like moving a fader while Cubase plays.
 
-    target: volume (dB) | pan (-1..1) | mute (0/1) | sendN (dB, 1-8) | qcN (0..1) | instrument:N (0..1) |
+    target: volume (dB) | pan (-1..1) | mute (0/1) | sendN (dB, N = 0-based send slot like set_send) |
+            qcN (0..1, N = 0-7) | instrument:N (0..1, N = 0-15) |
             plugin:<plug-in>/<parameter> (0..1, e.g. "plugin:Compressor/Threshold") | raw control key.
     Either points=[{"bar": 9, "value": -20}, {"bar": 13, "value": 0}] (or "beat" relative to start) or a shape:
       ramp (start->end, curve linear|exp|log|s), fade_in, fade_out, lfo (center, depth, rate_beats, waveform
@@ -2188,12 +2233,12 @@ def write_automation(track: TrackRef, target: str = "volume", start_bar: float =
     first = to_norm(crv(0.0))
     try:
         b.set_and_wait(f"{pre}.awrite", 1.0)
-        b.request("time", locator="cursor",
-                  value=_position_string(b, start_bar - pre_beats / beats_per_bar, beats_per_bar=beats_per_bar))
+        _locate(b, "cursor", start_bar - pre_beats / beats_per_bar, beats_per_bar=beats_per_bar)
         time.sleep(0.15)
+        latency = float(os.environ.get("NEOCP_RECORD_LATENCY_MS", "0")) / 1000.0
+        t0 = time.perf_counter() + latency  # beat 0 of the pre-roll = when play is sent (+ latency)
         b.set("transport.play", 1.0)
         b.wait_for(lambda: bool(_flag(b, "transport.play")), 1.5)
-        t0 = time.perf_counter()
         frame = 1.0 / max(5.0, min(100.0, resolution_hz if tgt["kind"] == "slot" else min(resolution_hz, 25.0)))
         last = None
         next_t = t0

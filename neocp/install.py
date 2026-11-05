@@ -195,6 +195,10 @@ def uninstall() -> int:
         if d.exists():
             shutil.rmtree(d)
             print(f"removed {d}")
+        try:
+            d.parent.rmdir()  # empty 'NeoCP' vendor folder
+        except OSError:
+            pass
     cfg = claude_desktop_config()
     if cfg.exists():
         try:

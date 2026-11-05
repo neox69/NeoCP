@@ -17,8 +17,12 @@ from .link import Link
 
 
 def play_notes(link: Link, notes: List[Dict], bpm: float, channel: int = 0,
-               start_delay: float = 0.0, stop: Optional[threading.Event] = None) -> Dict:
-    """Play canonical notes (beats) at ``bpm``. Blocks until done. Returns stats."""
+               start_delay: float = 0.0, stop: Optional[threading.Event] = None,
+               t0: Optional[float] = None) -> Dict:
+    """Play canonical notes (beats) at ``bpm``. Blocks until done. Returns stats.
+
+    t0: absolute perf_counter() time of beat 0 (e.g. when Cubase was told to start); overrides start_delay.
+    Events whose time already passed are sent immediately."""
     spb = 60.0 / float(bpm)
     events = []
     for i, n in enumerate(notes):
@@ -27,7 +31,8 @@ def play_notes(link: Link, notes: List[Dict], bpm: float, channel: int = 0,
         off = (n["start"] + n["duration"]) * spb
         heapq.heappush(events, (on, 1, i, "on", ch, n["pitch"], n["velocity"]))
         heapq.heappush(events, (off, 0, i, "off", ch, n["pitch"], 0))
-    t0 = time.perf_counter() + start_delay
+    if t0 is None:
+        t0 = time.perf_counter() + start_delay
     max_late = 0.0
     sounding = set()
     try:

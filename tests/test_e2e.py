@@ -86,8 +86,10 @@ def test_locators_and_actions(mock_bridge):
     assert r["set"] == "5.1.1.0"
     r = call(S.set_loop_range, 9, 17)
     assert r["left_locator"] == "9.1.1.0" and r["right_locator"] == "17.1.1.0"
-    r = call(S.bank, "next")
-    assert r["bank_offset"] == 32
+    r = call(S.bank, "next")  # only 3 tracks: Cubase cannot move the bank -> verified, stays at 0
+    assert r["bank_offset"] == 0 and r["at_last_page"] is True
+    r = call(S.set_track_volume, 70, normalized=0.5)
+    assert "error" in r and "no track" in r["error"]
 
 
 def test_record_notes(mock_bridge, monkeypatch):
@@ -145,3 +147,15 @@ def test_produce_song_existing_tracks(mock_bridge, tmp_path, monkeypatch):
     assert r["tempo"] == 82.0 and r["midi_file"].endswith(".mid")
     rec = [s for s in r["steps"] if "recorded" in s]
     assert [s["recorded"] for s in rec] == ["drums", "bass", "chords"] and all(s["notes"] > 0 for s in rec)
+
+
+def test_parsing_and_positions():
+    from neocp.bridge import _parse_number as pn
+
+    class B:
+        transport = {"cursor_format": "Bars+Beats", "tempo": 120}
+    assert pn("-oo dB") == float("-inf") and pn("-6.02 dB") == -6.02
+    assert pn("1.20 kHz") == 1200 and pn("1,200 Hz") == 1200 and pn("0,5") == 0.5
+    assert S._position_string(B, 1, beat=4.9999, beats_per_bar=4) == "2.1.1.0"
+    assert S._position_string(B, 3.5, beats_per_bar=4) == "3.3.1.0"
+    assert S._position_string(B, 2, beats_per_bar=3) == "2.1.1.0"

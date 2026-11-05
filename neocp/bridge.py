@@ -57,6 +57,7 @@ class CubaseBridge:
         self.last_event_time = 0.0
         self.script_restarted = False
         self.listeners: List[Callable[[dict], None]] = []
+        self.op_lock = threading.RLock()  # serialises tool operations (bank moves + writes)
 
     # ------------------------------------------------------------------ wire
     def _on_sysex(self, data: List[int]) -> None:
@@ -80,9 +81,8 @@ class CubaseBridge:
         with self._cond:
             self.last_event_time = time.time()
             if ev.get("ev") == "hello":
-                # script (re)loaded inside Cubase: slot table may have changed
-                if self.connected and ev.get("slots") != len(self.keys):
-                    self.connected = False
+                # script (re)loaded inside Cubase: slot table and bank position were reset -> resync
+                self.connected = False
                 self.script_restarted = True
             if ev.get("ev") == "state":
                 for row in ev.get("slots") or []:
@@ -140,6 +140,9 @@ class CubaseBridge:
                 break
         with self._lock:
             self.info = info
+            self.state.clear()
+            self.objects.clear()
+            self.transport.clear()
             self.keys, self.kinds = keys, kinds
             self.key_to_id = {k: i for i, k in enumerate(keys)}
             self.command_ids = {}
@@ -154,8 +157,20 @@ class CubaseBridge:
         return info
 
     def ensure(self) -> None:
-        if not self.connected:
-            self.connect()
+        with self.op_lock:
+            if not self.connected:
+                self.connect()
+
+    def key_of(self, sid: int) -> Optional[str]:
+        return self.keys[sid] if 0 <= sid < len(self.keys) else None
+
+    def poke(self) -> None:
+        """Cubase 12 has no idle loop: events are only flushed when a request arrives."""
+        if not (self.info.get("features") or {}).get("idle", True):
+            try:
+                self.request("ping", timeout=1.0)
+            except CubaseError:
+                pass
 
     def refresh(self) -> None:
         d = self.request("dump", timeout=10)
@@ -218,6 +233,7 @@ class CubaseBridge:
 
     def set_and_wait(self, key: str, value: float, timeout: float = 0.6, tol: float = 0.002) -> Dict[str, Any]:
         self.set(key, value)
+        self.poke()
         self.wait_for(lambda: (self.value(key) is not None and abs(self.value(key) - value) <= tol), timeout)
         time.sleep(0.03)  # let the display string follow
         return self.get(key)
@@ -233,7 +249,7 @@ class CubaseBridge:
         for _ in range(iterations):
             mid = (lo + hi) / 2
             st = self.set_and_wait(key, mid)
-            got = parse(st.get("display"))
+            got = parse(self.display(key))
             if got is None:
                 return st
             best = st
@@ -280,17 +296,46 @@ class CubaseBridge:
             out.append({"bank_slot": i, "index": self.bank_offset + i, "name": title, "color": o.get("color")})
         return out
 
+    def _bank_signature(self) -> tuple:
+        try:
+            r = self.request("runtime_ids", timeout=3)
+            return tuple((c.get("uid"), c.get("rid")) for c in r.get("channels", []))
+        except CubaseError:
+            return tuple((self.objects.get(f"ch{i}") or {}).get("title") for i in range(self.bank_size))
+
+    def move_bank(self, pages: int) -> int:
+        """Reset the bank and step forward page by page, verifying with the host that it really moved.
+        Returns the number of pages actually moved (stops at the last page)."""
+        self.action("bank_reset")
+        time.sleep(0.15)
+        moved = 0
+        for _ in range(max(0, pages)):
+            before = self._bank_signature()
+            self.action("bank_next")
+            changed = False
+            end = time.time() + 1.0
+            while time.time() < end:
+                time.sleep(0.1)
+                if self._bank_signature() != before:
+                    changed = True
+                    break
+            if not changed:
+                break
+            moved += 1
+        self.bank_offset = moved * self.bank_size
+        time.sleep(0.15)
+        return moved
+
     def ensure_track_in_bank(self, index: int) -> int:
         """Make sure absolute track ``index`` is mirrored; return its bank slot."""
         if index < 0:
             raise CubaseError("track index must be >= 0")
         if self.bank_offset <= index < self.bank_offset + self.bank_size:
             return index - self.bank_offset
-        target = (index // self.bank_size) * self.bank_size
-        self.action("bank_reset")
-        if target:
-            self.action("bank_next", times=target // self.bank_size)
-        time.sleep(0.25)
+        pages = index // self.bank_size
+        moved = self.move_bank(pages)
+        if moved < pages:
+            raise CubaseError(f"there is no track with index {index} (project has fewer channels)")
         return index - self.bank_offset
 
     def track_prefix(self, index: int) -> str:
@@ -309,16 +354,23 @@ class CubaseBridge:
 
 
 def _parse_number(s: Optional[str]) -> Optional[float]:
+    """Parse a Cubase display string ('-6.02 dB', '-oo', '1.20 kHz', '1,200 Hz', 'C', 'L50', '+3.0')."""
     if s is None:
         return None
     import re
-    t = str(s).strip().replace(",", ".")
-    if t.lower() in ("-oo", "-inf", "-∞", "off"):
+    t = str(s).strip()
+    low = t.lower()
+    if low.startswith(("-oo", "-inf", "-∞", "−∞", "off")) or low in ("-", "oo"):
         return float("-inf")
+    t = re.sub(r"(?<=\d),(?=\d{3}(\D|$))", "", t)  # thousands separator
+    t = t.replace(",", ".").replace("−", "-")
     m = re.search(r"[-+]?\d+(?:\.\d+)?", t)
     if not m:
         return None
     v = float(m.group(0))
-    if re.search(r"\d\s*k(hz)?\b", t.lower()):
+    rest = t[m.end():].strip().lower()
+    if rest.startswith("k"):  # '1.2 kHz', '1.2k'
         v *= 1000
+    elif rest.startswith("m") and not rest.startswith("ms"):  # 'M' mega (rare)
+        pass
     return v

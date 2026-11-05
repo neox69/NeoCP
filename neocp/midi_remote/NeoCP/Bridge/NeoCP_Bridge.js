@@ -636,6 +636,9 @@ var handlers = {
         var s = commandIndex[p.category + '\u0001' + p.command]
         if (!s) throw new Error('command not bound: ' + p.category + '/' + p.command)
         if (p.check && s.binding && s.binding.canPerform) return { can_perform: s.binding.canPerform(m) }
+        for (var pr = 0; pr < pendingRelease.length; ++pr) {
+            if (pendingRelease[pr] === s) { s.cv.setProcessValue(dev, 0); pendingRelease.splice(pr, 1); break }
+        }
         s.cv.setProcessValue(dev, 1)
         pendingRelease.push(s)
         return { id: s.id, triggered: true }
@@ -938,7 +941,18 @@ midiIn.mOnSysex = function (activeDevice, message) {
     }
     inbox.push({ id: id, req: req })
     // Cubase 12 has no idle callback: process synchronously with the last known mapping
-    if (!idleSeen && gMapping) processInbox(activeDevice, gMapping)
+    if (!idleSeen && gMapping) {
+        releasePending(activeDevice)
+        processInbox(activeDevice, gMapping)
+        emitEvents(activeDevice)
+        flushOut(activeDevice, CFG.MAX_OUT_CHUNKS_PER_IDLE)
+    }
+}
+
+function releasePending(dev) {
+    if (!pendingRelease.length) return
+    for (var i = 0; i < pendingRelease.length; ++i) pendingRelease[i].cv.setProcessValue(dev, 0)
+    pendingRelease = []
 }
 
 function processInbox(dev, m) {
@@ -998,10 +1012,7 @@ page.mOnIdle = function (activeDevice, activeMapping) {
     idleSeen = true
     gDevice = activeDevice; gMapping = activeMapping
     // release momentary command triggers from the previous idle
-    if (pendingRelease.length) {
-        for (var i = 0; i < pendingRelease.length; ++i) pendingRelease[i].cv.setProcessValue(activeDevice, 0)
-        pendingRelease = []
-    }
+    releasePending(activeDevice)
     if (inbox.length) processInbox(activeDevice, activeMapping)
     idleCounter++
     if (idleCounter % CFG.EVENT_INTERVAL_IDLES === 0) emitEvents(activeDevice)

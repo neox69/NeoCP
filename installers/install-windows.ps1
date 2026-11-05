@@ -19,6 +19,9 @@ $wheel = Get-ChildItem -Path $Here -Filter "neocp-*.whl" -ErrorAction SilentlyCo
 if ($wheel) { $src = $wheel.FullName } else { $src = "https://github.com/$Repo/releases/download/v$Version/neocp-$Version-py3-none-any.whl" }
 Write-Host "-> Installing NeoCP ($src)..."
 uv tool install --python 3.12 --force "$src"
+if ($LASTEXITCODE -ne 0) { Write-Host "uv could not install NeoCP (see the error above)." -ForegroundColor Red; Read-Host "Press Enter to close"; exit 1 }
+$toolBin = (uv tool dir --bin) 2>$null
+if (-not $toolBin) { $toolBin = $uvBin }
 
 # loopMIDI provides the virtual MIDI ports Windows lacks
 $loopmidi = Test-Path "${env:ProgramFiles(x86)}\Tobias Erichsen\loopMIDI\loopMIDI.exe"
@@ -36,7 +39,7 @@ $listen = @()
 $names = (Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ";"
 if ($names -match "VoiceMeeter") { $listen = @("--listen-device", "Voicemeeter Out B1") }
 elseif ($names -match "VB-Audio Virtual Cable|CABLE") { $listen = @("--listen-device", "CABLE Output") }
-& (Join-Path $uvBin "neocp-install.exe") @listen
+& (Join-Path $toolBin "neocp-install.exe") @listen
 
 Write-Host ""
 Write-Host "IMPORTANT: open loopMIDI and create these 3 ports (type the name, press +):" -ForegroundColor Yellow

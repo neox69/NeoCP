@@ -21,11 +21,12 @@ if [ -z "$WHEEL" ]; then
 fi
 echo "→ Installing NeoCP ($WHEEL)…"
 uv tool install --python 3.12 --force "$WHEEL"
+TOOL_BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
 
 echo "→ Installing the Cubase MIDI Remote script and configuring Claude…"
 LISTEN=""
 if system_profiler SPAudioDataType 2>/dev/null | grep -qi blackhole; then LISTEN="--listen-device BlackHole"; fi
-"$HOME/.local/bin/neocp-install" $LISTEN
+"$TOOL_BIN/neocp-install" $LISTEN
 
 if [ -z "$LISTEN" ]; then
   echo
