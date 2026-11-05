@@ -109,6 +109,12 @@ def tool(fn):
             return _ok({"error": str(e)})
         except (ValueError, KeyError, TypeError, IndexError) as e:
             return _ok({"error": f"{type(e).__name__}: {e}"})
+        except FileNotFoundError as e:
+            return _ok({"error": f"file not found: {e.filename or e}"})
+        except Exception as e:  # never surface a bare "Error executing tool": explain what failed
+            logger.exception("tool %s failed", fn.__name__)
+            return _ok({"error": f"{type(e).__name__}: {e}", "tool": fn.__name__,
+                        "hint": "unexpected error; details are in the NeoCP log (stderr of the MCP server)"})
     # Tools return JSON text (or Image content). Disable structured output: newer mcp versions (>= 1.10)
     # would otherwise build an output schema from the wrapped function's "-> Dict" annotation and reject
     # the string result ("Error executing tool ...").
