@@ -7,7 +7,7 @@ Claude (or any MCP client) can now see, control and **listen to** Steinberg Cuba
 * **Windows**: download `NeoCP-<version>-Windows.zip`, unzip it and double-click **Install NeoCP (Windows).bat**. Then create 3 ports in loopMIDI: `NeoCP to Cubase`, `NeoCP from Cubase`, `NeoCP Notes`.
 * Restart Claude Desktop and Cubase, then ask Claude: *"what's in my Cubase project?"*
 
-The installer needs no admin rights and no pre-installed Python. Full guide (Spanish): `docs/CONFIGURAR_CUBASE.md`, inside the ZIP.
+The installer needs no admin rights and no pre-installed Python. Full guide (Spanish): `docs/CONFIGURAR_CUBASE.md`. English documentation: `docs/README.md`. Both are inside the ZIP.
 
 ## New in 1.3.4
 * Hardening: any unexpected error inside a tool now comes back to Claude as a readable message (type, cause and hint) instead of a bare "Error executing tool". For example, `list_audio_inputs` without the audio library installed used to fail like that.

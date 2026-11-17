@@ -1,5 +1,7 @@
 # NeoCP — AI co-producer for Cubase
 
+[English](README.en.md) · Español
+
 > 📘 **Guía completa de configuración (Cubase, puertos MIDI, grabación de notas y escucha con BlackHole, VoiceMeeter o loopback): [docs/CONFIGURAR_CUBASE.md](docs/CONFIGURAR_CUBASE.md)**
 
 Servidor **MCP (Model Context Protocol)** para **Steinberg Cubase / Nuendo 13+** que permite a Claude (o cualquier cliente MCP) **ver y controlar el proyecto en tiempo real**: transporte, tempo, localizadores, mezclador completo, channel strip, inserciones y parámetros de plug-ins, más de 1400 comandos de Cubase, generación musical y escritura de notas en pistas.

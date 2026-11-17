@@ -27,7 +27,9 @@ def main() -> None:
     if not wheel.exists():
         raise SystemExit(f"{wheel} missing: run `python -m build` first")
     script = ROOT / "neocp" / "midi_remote" / "NeoCP" / "Bridge" / "NeoCP_Bridge.js"
-    docs = [ROOT / "README.md", ROOT / "docs" / "CONFIGURAR_CUBASE.md", ROOT / "LICENSE"]
+    # archive path -> source file; the docs tree keeps its folders
+    docs = {"README.md": ROOT / "README.md", "README.en.md": ROOT / "README.en.md", "docs/LICENSE": ROOT / "LICENSE",
+            **{p.relative_to(ROOT).as_posix(): p for p in sorted((ROOT / "docs").rglob("*.md"))}}
 
     def render(p: Path) -> bytes:
         return p.read_text(encoding="utf-8").replace("__VERSION__", version).replace("__REPO__", a.repo).encode("utf-8")
@@ -47,8 +49,8 @@ def main() -> None:
             for f in files:
                 add_exec(z, f"{top}/{f}", render(inst / f))
             z.write(wheel, f"{top}/{wheel.name}")
-            for d in docs:
-                z.write(d, f"{top}/docs/{d.name}" if d.name != "README.md" else f"{top}/README.md")
+            for arc, d in docs.items():
+                z.write(d, f"{top}/{arc}")
             z.write(script, f"{top}/MIDI Remote script/NeoCP/Bridge/{script.name}")
         print("wrote", out.relative_to(ROOT))
     mr = DIST / "NeoCP_Bridge.midiremote"
